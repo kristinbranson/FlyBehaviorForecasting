@@ -37,7 +37,7 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
                 monlyF=0, plottrxlen=100, tsim=1, t0=0, t1=None,\
                 t_dim=7, genDataset=False, ifold=0, binwidth=2.0,\
                 num_hid=100, model_epoch=200000, btype='linear',\
-                num_bin=51):
+                num_bin=51,gender=0):
 
     print(mtype, monlyF, tsim)
 
@@ -387,7 +387,7 @@ def simtrx2numpy(simtrx):
 
 def get_error(model_trx, data_trx, time, nstep):
 
-    assert(nstep>0, 'Nstep should be greater than 0')
+    assert nstep>0, 'Nstep should be greater than 0'
     x_data = data_trx['x'][time+nstep,:]
     y_data = data_trx['y'][time+nstep,:]
     theta_data = data_trx['theta'][time+nstep,:]
@@ -1016,7 +1016,8 @@ if __name__ == '__main__':
                             monlyF=abs(1-args.visionF), ifold=ifold,\
                             tsim=args.tsim, mtype=args.mtype, \
                             t_dim=args.t_dim, btype=args.btype,\
-                            num_bin=args.num_bin)
+                            num_bin=args.num_bin,\
+                            gender=args.gender)
 
 
         elif args.mtype == 'zero':
