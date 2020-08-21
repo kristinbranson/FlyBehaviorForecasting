@@ -123,5 +123,7 @@ python evaluate_model.py --atype diff_nstep
 
 
 
+### Human Evaluation
+python evaulate_huamn.py 
 
 
