@@ -373,7 +373,8 @@ def model_selection(args, male_model, female_model, videotype, mtype, \
         from util import load_rnn
         if male_model is None:
             print(mtype)
-            if args.save_path_male  is not None:
+            if ('save_path_male' in args) and \
+               (args.save_path_male is not None):
                 load_path = args.save_path_male 
             elif mtype == 'rnn50':
                 if 'perc' in btype and 'gmr' == args.dtype:
@@ -402,7 +403,8 @@ def model_selection(args, male_model, female_model, videotype, mtype, \
                              load_path=load_path)
             print('Male Model Load Path %s' % load_path)
         if female_model is None:
-            if args.save_path_female  is not None:
+            if ('save_path_female' in args) and \
+               (args.save_path_female is not None):
                 load_path = args.save_path_female 
             elif mtype == 'rnn50':
                 if 'perc' in btype:
