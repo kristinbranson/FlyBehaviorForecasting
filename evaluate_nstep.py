@@ -128,17 +128,27 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
         if 'rnn' in mtype or 'skip' in mtype:
             for t_j in range(t-tsim, t):
 
-                for fly_j in range(n_flies):
-                    x[fly_j] = trx['x'][t_j,fly_j]
-                    y[fly_j] = trx['y'][t_j,fly_j]
-                    theta[fly_j] = trx['theta'][t_j,fly_j]
-                    a[fly_j] = trx['a'][t_j,fly_j]
-                    l_wing_ang[fly_j] = trx['l_wing_ang'][t_j,fly_j]
-                    r_wing_ang[fly_j] = trx['r_wing_ang'][t_j,fly_j]
-                    l_wing_len[fly_j] = trx['l_wing_len'][t_j,fly_j]
-                    r_wing_len[fly_j] = trx['r_wing_len'][t_j,fly_j]
+                x[:] = trx['x'][t_j,:]
+                y[:] = trx['y'][t_j,:]
+                theta[:] = trx['theta'][t_j,:]
+                a[:] = trx['a'][t_j,:]
+                l_wing_ang[:]=trx['l_wing_ang'][t_j,:]
+                r_wing_ang[:]=trx['r_wing_ang'][t_j,:]
+                l_wing_len[:]=trx['l_wing_len'][t_j,:]
+                r_wing_len[:]=trx['r_wing_len'][t_j,:]
+                feat_motion[:,:]=motiondata[:,t_j,:]
 
-                    feat_motion[:,fly_j] = motiondata[:,t_j,fly_j]
+                # for fly_j in range(n_flies):
+                #     x[fly_j] = trx['x'][t_j,fly_j]
+                #     y[fly_j] = trx['y'][t_j,fly_j]
+                #     theta[fly_j] = trx['theta'][t_j,fly_j]
+                #     a[fly_j] = trx['a'][t_j,fly_j]
+                #     l_wing_ang[fly_j] = trx['l_wing_ang'][t_j,fly_j]
+                #     r_wing_ang[fly_j] = trx['r_wing_ang'][t_j,fly_j]
+                #     l_wing_len[fly_j] = trx['l_wing_len'][t_j,fly_j]
+                #     r_wing_len[fly_j] = trx['r_wing_len'][t_j,fly_j]
+                #
+                #     feat_motion[:,fly_j] = motiondata[:,t_j,fly_j]
 
                 xprev[:] = x
                 yprev[:] = y
@@ -313,12 +323,12 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
 
     visionF = 1-int(monlyF)
     results = np.stack([vel_errors, pos_errors, theta_errors, wing_ang_errors, wing_len_errors])
-    os.makedirs('%s/metrics/%s/' % (args.basepath, vpath), exist_ok=True)   
-    os.makedirs('%s/metrics/%s/%s' % (args.basepath, vpath, mtype), exist_ok=True)   
+    os.makedirs('%s/metrics/%s/' % (args.outdir, vpath), exist_ok=True)   
+    os.makedirs('%s/metrics/%s/%s' % (args.outdir, vpath, mtype), exist_ok=True)   
     if 'rnn' in mtype or 'skip' in mtype:
-        fname=args.basepath+'/metrics/'+vpath+'/'+mtype+'/'+mtype+'_'+str(t0)+'t0_'+str(t1)+'t1_%dtsim_%s_%depoch_%dfold' % (tsim, btype, model_epoch, ifold)
+        fname=args.outdir+'/metrics/'+vpath+'/'+mtype+'/'+mtype+'_'+str(t0)+'t0_'+str(t1)+'t1_%dtsim_%s_%depoch_%dfold' % (tsim, btype, model_epoch, ifold)
     else:
-        fname=args.basepath+'/metrics/'+vpath+'/'+mtype+'/'+mtype+'_visionF'+str(visionF)+'_'+str(t0)+'t0_'+str(t1)+'t1_%dtsim_%depoch_%dfold' % (tsim, model_epoch, ifold)
+        fname=args.outdir+'/metrics/'+vpath+'/'+mtype+'/'+mtype+'_visionF'+str(visionF)+'_'+str(t0)+'t0_'+str(t1)+'t1_%dtsim_%depoch_%dfold' % (tsim, model_epoch, ifold)
     print(fname)
     np.save(fname, np.asarray(results))
 
@@ -874,7 +884,7 @@ def plot_nstep_errors(models, dtype, video_list, t_dim=50, gender=0, t0=21224, t
 
 
 """parsing and configuration"""
-def parse_args():
+def parse_args(argv):
     desc = "Pytorch implementation of FlyNetwork collections"
     parser = argparse.ArgumentParser(description=desc)
 
@@ -894,14 +904,17 @@ def parse_args():
     parser.add_argument('--plotF', type=int, default=0)
     parser.add_argument('--basepath', type=str, default='/groups/branson/home/imd/Documents/janelia/research/fly_behaviour_sim/71g01/')
     parser.add_argument('--datapath', type=str, default='/groups/branson/home/bransonk/behavioranalysis/code/SSRNN/SSRNN/Data/bowl/')
+    parser.add_argument('--outdir', type=str, default='.')
+    return check_args(parser.parse_args(argv))
 
-    return check_args(parser.parse_args())
+def main(argv=None):
 
+    if argv == None:
+        argv = sys.argv[1:]
 
-if __name__ == '__main__':
     fname = 'eyrun_simulate_data.mat'
 
-    args = parse_args()
+    args = parse_args(argv)
     args.y_dim = args.num_bin*args.num_mfeat
     video_list = video16_path[args.dtype]
 
@@ -985,18 +998,22 @@ if __name__ == '__main__':
         elif 'rnn' in args.mtype or 'skip' in args.mtype:
 
             ### LR MO ###
-            model_epoch=200000
+            model_epoch=200000 # hardcoded number of epochs of training
             from simulate_rnn import model_selection
             for testvideo_num in range(0,len(video_list[TEST])):
 
                 vpath = video_list[TEST][testvideo_num]
-                print ('testvideo %d %s' % (testvideo_num, vpath))
+                print ('testvideo %d/%d %s' % (testvideo_num, len(video_list[TEST]), vpath))
                 matfile = args.datapath+vpath+fname
 
                 if  testvideo_num == 1 or testvideo_num == 2 :
+                    # hardcoded: male flies are 0...8 and female flies are 9...18 for video 1, 2
+                    # seems like this won't work if we change video data set. TO FIX
                     simulated_male_flies = np.arange(0,9,1)
                     simulated_female_flies = np.arange(9,19,1)
                 else:
+                    # hardcoded: male flies are 0...9 and female flies are 10...19 for video 0, 3
+                    # seems like this won't work if we change video data set. TO FIX
                     simulated_male_flies = np.arange(0,10,1)
                     simulated_female_flies = np.arange(10,20,1)
 
@@ -1044,5 +1061,6 @@ if __name__ == '__main__':
                 baseline1_constVel_nstep_prediction(vpath, tsim=agrs.tsim)
 
 
-
+if __name__ == '__main__':
+    main()
 
