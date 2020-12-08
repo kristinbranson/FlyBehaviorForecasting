@@ -2,6 +2,20 @@
 ## SINGULARITY IMAGE : branson_cuda10.simg
 #
 
+# Generate feratures
+python gen_dataset.py --onehotF 0 --num_bin 101 --bin_type perc
+
+# Train RNN models (note: this relies on pre-existing feature files in /groups, because paths are wrong)
+CUDA_VISIBLE_DEVICES=0 nohup python -u main_gru_test.py --rnn_type gru --gender 0 --num_bin 101 --bin_type 'perc' &> nohup_gru0.out &; CUDA_VISIBLE_DEVICES=0 nohup python -u main_gru_test.py --rnn_type hrnn --gender 0 --num_bin 101 --bin_type 'perc' &> nohup_hrnn0.out
+CUDA_VISIBLE_DEVICES=1 nohup python -u main_gru_test.py --rnn_type gru --gender 1 --num_bin 101 --bin_type 'perc' &> nohup_gru1.out &; CUDA_VISIBLE_DEVICES=1 nohup python -u main_gru_test.py --rnn_type hrnn --gender 1 --num_bin 101 --bin_type 'perc' &> nohup_hrnn1.out
+
+
+CUDA_VISIBLE_DEVICES=0 nohup python simulate_rnn.py --dtype 'gmr' --mtype 'rnn50' --sim_type 'SMSF' --basepath='.' --model_epoch 10000 --save_path_male='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000' --save_path_female='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000' &> nohup_simulate_gmr_smsf.out &
+CUDA_VISIBLE_DEVICES=1 nohup python simulate_rnn.py --dtype 'hrnn' --mtype 'skip50' --sim_type 'SMSF' --basepath='.' --model_epoch 10000 --save_path_male='./models/gmr/flyNet_hrnn50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000' --save_path_female='./models/gmr/flyNet_hrnn50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000' &> nohup_simulate_hrnn_smsf.out &
+CUDA_VISIBLE_DEVICES=0 nohup python simulate_rnn.py --dtype 'gmr' --mtype 'rnn50' --sim_type 'LOO' --basepath='.' --model_epoch 10000 --save_path_male='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000' --save_path_female='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000' &> nohup_simulate_gmr_loo.out &
+CUDA_VISIBLE_DEVICES=1 nohup python simulate_rnn.py --dtype 'hrnn' --mtype 'skip50' --sim_type 'LOO' --basepath='.' --model_epoch 10000 --save_path_male='./models/gmr/flyNet_hrnn50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000' --save_path_female='./models/gmr/flyNet_hrnn50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000' &> nohup_simulate_hrnn_loo.out &
+
+python evaluate_nstep.py --dtype 'gmr' --mtype 'rnn50' --tsim 30 --basepath './' --save_path_male='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000' --save_path_female='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000'
 
 ############################
 ##### DATA GENERATION ######
@@ -32,16 +46,17 @@ python gen_dataset.py --onehotF 0 --num_bin 101 --bin_type linear
 
 # RUN RNN
 # gender = 0 -> male
-python -u main_gru.py --rnn_type gru --gender 0 --num_bin 51 --bin_type 'perc' --save_dir './models/gmr/'
+python -u main_gru.py --rnn_type gru --gender 0 --num_bin 101 --bin_type 'perc' --save_dir './models/gmr/'
 # gender = 1 -> female
-python -u main_gru.py --rnn_type gru --gender 1 --num_bin 51 --bin_type 'perc'
+python -u main_gru.py --rnn_type gru --gender 1 --num_bin 101 --bin_type 'perc'
 
 # RUN HRNN 
-python -u main_gru.py --rnn_type hrnn --gender 0 --num_bin 51 --bin_type 'perc'
-python -u main_gru.py --rnn_type hrnn --gender 1 --num_bin 51 --bin_type 'perc'
+python -u main_gru.py --rnn_type hrnn --gender 0 --num_bin 101 --bin_type 'perc'
+python -u main_gru.py --rnn_type hrnn --gender 1 --num_bin 101 --bin_type 'perc'
 
 # RUN CONV 
 python -u main_conv.py --save_dir ./runs/conv4_cat50/ --epoch 25000 --gender 1 --vtype full --visionOnly 0 --vision 1 --lr 0.01 --h_dim 128 --t_dim 50  --dtype gmr
+ 
 
 
 ########################

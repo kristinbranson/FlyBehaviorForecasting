@@ -16,7 +16,7 @@ from util_fly import *
 from util import copy_hiddens, check_args
 
 from tqdm import tqdm
-from apply_model import *
+from apply_model_sjb import *
 
 MALE=0
 FEMALE=1
@@ -77,7 +77,6 @@ def get_real_fly(real_flies, motiondata, feat_motion, t, trx, x, y, theta, \
             vision_chamber_data, feat_motion
 
 
-
 def get_simulate_fly(model, state, t, trx, \
                      simulated_flies, feat_motion, \
                      x, y, theta, a, b, \
@@ -88,8 +87,9 @@ def get_simulate_fly(model, state, t, trx, \
                      thrd=10, num_bin=51, hiddens=None, t_dim=50,\
                      visionF=1, visionOnly=0):
 
-    from util_fly import compute_vision, binscores2motion, update_position
+    from util_fly_sjb import compute_vision, binscores2motion, update_position
     vision_chamber_data = []
+    device = simulated_flies.device
     for flyi in range(len(simulated_flies)):
         fly = simulated_flies[flyi]
         # vision features for frame t-1
@@ -138,7 +138,7 @@ def get_simulate_fly(model, state, t, trx, \
                             feat_motion[:,fly],params)
 
 
-        vision_chamber = np.hstack([flyvision,chambervision])
+        vision_chamber = torch.cat([flyvision,chambervision])
         vision_chamber_data.append(vision_chamber)
 
 
@@ -174,24 +174,25 @@ def simulate_next_t_steps_v2(t0,curpos,male_state,female_state,\
     
 
 
-    from util_fly import compute_vision, motion2binidx, \
+    from util_fly_sjb import compute_vision, motion2binidx, \
                             binscores2motion, update_position
     # whether we are going to do the simulation within this function, or if it is already done
     #n_flies      = len(curpos['x'])
     n_flies      =len(male_ind) + len(female_ind)
     init_hiddens_male = copy_hiddens(male_hiddens, params)
     init_hiddens_fale = copy_hiddens(female_hiddens, params)
-        
+
+    device = curpos['x'].device
     simtrx = {}
-    simtrx['x']=np.zeros((tsim,n_flies))
-    simtrx['y']=np.zeros((tsim,n_flies))
-    simtrx['theta']=np.zeros((tsim,n_flies))
-    simtrx['a']=np.zeros((tsim,n_flies))
-    simtrx['b']=np.zeros((tsim,n_flies))
-    simtrx['l_wing_ang']=np.zeros((tsim,n_flies))
-    simtrx['r_wing_ang']=np.zeros((tsim,n_flies))
-    simtrx['l_wing_len']=np.zeros((tsim,n_flies))
-    simtrx['r_wing_len']=np.zeros((tsim,n_flies))
+    simtrx['x']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['y']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['theta']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['a']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['b']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['l_wing_ang']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['r_wing_ang']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['l_wing_len']=torch.zeros((tsim,n_flies), device=device)
+    simtrx['r_wing_len']=torch.zeros((tsim,n_flies), device=device)
 
     simtrx['x'][0,:]=curpos['x']
     simtrx['y'][0,:]=curpos['y']
@@ -203,25 +204,27 @@ def simulate_next_t_steps_v2(t0,curpos,male_state,female_state,\
     simtrx['l_wing_len'][0,:]=curpos['l_wing_len']
     simtrx['r_wing_len'][0,:]=curpos['r_wing_len']
  
+    print("simulated_flies=%s" % str(simulated_flies))
+    
     visionF = abs(1-monlyF)
     male_hiddens0, female_hiddens0 = [], []
     predictions_flies, flyvisions_flies = [], []
     #for fly2 in range(n_flies):
     for fly2 in simulated_flies:
 
-        x=curpos['x'].copy()
-        y=curpos['y'].copy()
-        a=curpos['a'].copy()
-        b=curpos['b'].copy()
-        theta=curpos['theta'].copy()
+        x=curpos['x'].clone()
+        y=curpos['y'].clone()
+        a=curpos['a'].clone()
+        b=curpos['b'].clone()
+        theta=curpos['theta'].clone()
         l_wing_ang=curpos['l_wing_ang']
         r_wing_ang=curpos['r_wing_ang']
         l_wing_len=curpos['l_wing_len']
         r_wing_len=curpos['r_wing_len']
 
-        xprev = x.copy()
-        yprev = y.copy()
-        thetaprev = theta.copy()
+        xprev = x.clone()
+        yprev = y.clone()
+        thetaprev = theta.clone()
         
         predictions, flyvisions = [], []
         hiddens_male = copy_hiddens(init_hiddens_male, params)
@@ -273,7 +276,7 @@ def simulate_next_t_steps_v2(t0,curpos,male_state,female_state,\
                                                 visionF, t, t_dim, fly)
                             feat_motion[:,fly] = binscores #binscores2motion(binscores,params)
                         predictions.append(binscores)
-                        flyvisions.append(np.hstack([flyvision,chambervision]))
+                        flyvisions.append(torch.cat([flyvision,chambervision]))
                     else:
                         feat_motion[:,fly] = motiondata[:,t0+t,fly]
                     
@@ -300,16 +303,16 @@ def simulate_next_t_steps_v2(t0,curpos,male_state,female_state,\
 
             if t==1:  
                 if fly2 in male_ind:
-                    ind2 = np.argwhere(male_ind == fly2).flatten()[0]
+                    ind2 = (male_ind == fly2).nonzero().flatten()[0]
                     male_hiddens0.append(copy_hiddens(hiddens_male, params)[ind2])
                 else:
-                    ind2 = np.argwhere(female_ind == fly2).flatten()[0]
+                    ind2 = (female_ind == fly2).nonzero().flatten()[0]
                     female_hiddens0.append(copy_hiddens(hiddens_fale, params)[ind2])
                 #print(ind2, fly2)
-        predictions_flies.append(predictions)
-        flyvisions_flies.append(flyvisions)
+        predictions_flies.append(torch.stack(predictions, 0))
+        flyvisions_flies.append(torch.stack(flyvisions, 0))
 
-    predictions_flies = np.asarray(predictions_flies).transpose(1,0,2)
+    predictions_flies = torch.stack(predictions_flies, 0).transpose(0,1)
     return simtrx, feat_motion, predictions_flies, \
             male_hiddens0, female_hiddens0, flyvisions_flies
 
@@ -330,17 +333,18 @@ def get_nstep_comparison_rnn(x, y, theta, a, b, \
 
     # initial position
     curpos = {}
-    curpos['x']=x.copy()
-    curpos['y']=y.copy()
-    curpos['theta']=theta.copy()
-    curpos['a']=a.copy()
-    curpos['b'] = basesize['minax'].copy()
-    curpos['l_wing_ang']=l_wing_ang.copy()
-    curpos['r_wing_ang']=r_wing_ang.copy()
-    curpos['l_wing_len']=l_wing_len.copy()
-    curpos['r_wing_len']=r_wing_len.copy()
+    curpos['x']=x.clone()
+    curpos['y']=y.clone()
+    curpos['theta']=theta.clone()
+    curpos['a']=a.clone()
+    curpos['b'] = basesize['minax'].clone()
+    curpos['l_wing_ang']=l_wing_ang.clone()
+    curpos['r_wing_ang']=r_wing_ang.clone()
+    curpos['l_wing_len']=l_wing_len.clone()
+    curpos['r_wing_len']=r_wing_len.clone()
     
     # simulate the next tsim time points
+    print("simulated_flies=%s" % str(simulated_flies))
     simtrx, feat_motion, predictions, \
             male_hiddens, female_hiddens, flyvisions\
                             = simulate_next_t_steps_v2(tplot,curpos,\
@@ -364,8 +368,9 @@ def get_nstep_comparison_rnn(x, y, theta, a, b, \
 
 
 def model_selection(args, male_model, female_model, videotype, mtype, \
-        model_epoch, num_hid, simulated_male_flies, \
-        simulated_female_flies, dtype, btype='linear', num_bin=101):
+                    model_epoch, num_hid, simulated_male_flies, \
+                    simulated_female_flies, dtype, btype='linear', num_bin=101,
+                    use_cuda=0):
 
     print('Loading Model...\n')
     if 'rnn' in mtype or 'skip' in mtype:
@@ -399,7 +404,7 @@ def model_selection(args, male_model, female_model, videotype, mtype, \
             elif mtype == 'skip150':
                 load_path = args.basepath+'/models/flyNetSKIP6_150steps_32batch_sz_0.01lr_%dhids_gru_onehot%d_visionF1_vtype:%s_maleflies_%s'% (num_hid, onehotF, videotype, model_epoch)
             male_model = load_rnn(args, mtype=mtype, gender=MALE, \
-                             num_hid=num_hid, cudaF=0, num_bin=num_bin,\
+                             num_hid=num_hid, cudaF=use_cuda, num_bin=num_bin,\
                              load_path=load_path)
             print('Male Model Load Path %s' % load_path)
         if female_model is None:
@@ -431,13 +436,13 @@ def model_selection(args, male_model, female_model, videotype, mtype, \
             elif mtype == 'skip150':
                 load_path = args.basepath+'/models/flyNetSKIP6_150steps_32batch_sz_0.01lr_%dhids_gru_onehot%d_visionF1_vtype:%s_femaleflies_%s'% (num_hid, onehotF, videotype, model_epoch)
             female_model = load_rnn(args, mtype=mtype, gender=FEMALE, \
-                             num_hid=num_hid, cudaF=0, num_bin=num_bin,\
+                             num_hid=num_hid, cudaF=use_cuda, num_bin=num_bin,\
                              load_path=load_path)
             print('Female Model Load Path %s' % load_path)
 
-        male_hiddens   = [male_model.initHidden(1, use_cuda=0) \
+        male_hiddens   = [male_model.initHidden(1, use_cuda=use_cuda) \
                             for i in range(len(simulated_male_flies))]
-        female_hiddens = [female_model.initHidden(1, use_cuda=0)\
+        female_hiddens = [female_model.initHidden(1, use_cuda=use_cuda)\
                             for i in range(len(simulated_female_flies))]
     else:
         model = motiondata
@@ -531,9 +536,10 @@ def simulate_flies( args, real_male_flies, real_female_flies, \
                     visionF=0, bookkeepingF=True, fname='small', \
                     videotype='full', testvideo_num=0, vpath='',\
                     mtype='rnn50', DEBUG=0, burning=100, sim_type='SMSF',\
-                    fly_single_ind=0, btype='linear', num_bin=101, dtype='rnn50'):
+                    fly_single_ind=0, btype='linear', num_bin=101, dtype='rnn50',
+                    use_cuda=0):
 
-    from util_fly import compute_vision, motion2binidx, \
+    from util_fly_sjb import compute_vision, motion2binidx, \
                     binscores2motion, update_position,\
                     get_default_fly_colors, draw_flies, update_flies
 
@@ -598,9 +604,9 @@ def simulate_flies( args, real_male_flies, real_female_flies, \
                     simulated_male_flies, simulated_female_flies, dtype, btype=btype, num_bin=num_bin)
 
     if sim_type == 'SMSF' or sim_type == 'LONG':
-        male_hiddens   = [male_model.initHidden(1, use_cuda=0) \
+        male_hiddens   = [male_model.initHidden(1, use_cuda=use_cuda) \
                                 for i in range(len(simulated_male_flies))]
-        female_hiddens = [female_model.initHidden(1, use_cuda=0)\
+        female_hiddens = [female_model.initHidden(1, use_cuda=use_cuda)\
                                 for i in range(len(simulated_female_flies))]
 
 

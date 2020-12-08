@@ -186,6 +186,14 @@ TRAIN=0
 VALID=1
 TEST=2
 
+def load_eyrun_data_sjb(matfile, device=None):
+    trx,motiondata,params,basesize = load_eyrun_data(matfile)
+    trx = {k: torch.Tensor(v).to(device) for k,v in trx.items()}
+    motiondata = torch.Tensor(motiondata).to(device)
+    basesize = {k: torch.Tensor(v).to(device) for k,v in basesize.items()}
+    params = {k: torch.Tensor(v).to(device) if type(v)==np.ndarray else v for k,v in params.items()}
+    return trx,motiondata,params,basesize
+    
 def load_eyrun_data(matfile):
 
     f = h5py.File(matfile,'r')
@@ -237,6 +245,9 @@ def load_eyrun_data(matfile):
 
 
 
+def load_vision_sjb(matfile, device=None):
+    return torch.Tensor(load_vision(matfile)).to(device)
+    
 def load_vision(matfile):
     
     f = h5py.File(matfile,'r')
@@ -556,6 +567,32 @@ def sample_batch_reg(data, batch_sz, tau, visionF=1):
     return X[perm], Y[perm]
 
 
+
+def combine_vision_data_sjb(simtrx_curr, flyvisions, num_fly=20, num_burn=4):
+
+    data = []
+    N = simtrx_curr['x'].shape[0]
+    for fly in range(num_fly):
+        points = []
+        for ii in range(num_burn, N):
+            x = simtrx_curr['x'][ii,fly]
+            y = simtrx_curr['y'][ii,fly]
+            theta = simtrx_curr['theta'][ii,fly]
+            aa = simtrx_curr['a'][ii,fly]
+            bb = simtrx_curr['b'][ii,fly]
+            l_wing_ang = simtrx_curr['l_wing_ang'][ii,fly]
+            r_wing_ang = simtrx_curr['r_wing_ang'][ii,fly]
+            l_wing_len = simtrx_curr['l_wing_len'][ii,fly]
+            r_wing_len = simtrx_curr['r_wing_len'][ii,fly]
+            point = torch.cat([torch.stack([x, y, theta, aa, bb,\
+                                l_wing_ang, r_wing_ang, \
+                                            l_wing_len, r_wing_len], 0), \
+                                flyvisions[fly, ii-num_burn, :]], 1)
+            points.append(point)
+        data.append(points)
+            
+    return torch.stack(data, 0)
+
 def combine_vision_data(simtrx_curr, flyvisions, num_fly=20, num_burn=4):
 
     data = []
@@ -837,6 +874,11 @@ def gender_classify(basesize):
     female_ind = np.argwhere(basesize > 19.5).flatten()
     return male_ind, female_ind
 
+def gender_classify_sjb(basesize):
+    male_ind = torch.where(basesize < 19.5)[0]
+    female_ind = torch.where(basesize > 19.5)[0]
+    return male_ind, female_ind
+
 def get_motiondata(dtype='gmr'):
 
     fname = 'eyrun_simulate_data.mat'
@@ -887,16 +929,8 @@ def mot2binidx(f_motion,bins):
     return binidx
 
 
-
-def gen_motion2bin_video(onehotF=0, dtype='gmr', bin_type='linear', num_bin=51):
-
-    if bin_type != 'linear':
-        bins = np.load('./bins/percentile_%sbins.npy' % num_bin)
-
-    fname = 'eyrun_simulate_data.mat'
-    from tqdm import tqdm
-    for vpaths in tqdm(video16_path[dtype]):
-        for vpath in vpaths:
+def gen_motion2bin_video_sub(args):
+            vpath, onehotF, dtype, bin_type, num_bin, fname, bins = args
             print(vpath)
             matfile = basepath+vpath+fname
             trx,motiondata,params,basesize = load_eyrun_data(matfile)
@@ -923,6 +957,31 @@ def gen_motion2bin_video(onehotF=0, dtype='gmr', bin_type='linear', num_bin=51):
             if not os.path.exists(path): os.makedirs(path)
             np.save(path+'bin_motion_indx_onehotF%d_%s_%dbin' % (onehotF, bin_type, num_bin), b_motions)
             np.save(path+'motion_%dbin_onehotF%d_%s' % (num_bin, onehotF, bin_type), bdata)
+            return b_motions
+
+def gen_motion2bin_video(onehotF=0, dtype='gmr', bin_type='linear', num_bin=51, num_threads=32, bins=None):
+
+    if bin_type != 'linear':
+        bins = np.load('./bins/percentile_%sbins.npy' % num_bin)
+
+    fname = 'eyrun_simulate_data.mat'
+
+    #from tqdm import tqdm
+    #for vpaths in tqdm(video16_path[dtype]):
+    #    for vpath in vpaths:
+    
+    args = [onehotF, dtype, bin_type, num_bin, fname, bins]
+    if num_threads > 1: 
+      import multiprocessing
+      paths = [[vpath]+args for vpaths in video16_path[dtype] for vpath in vpaths]
+      pool = multiprocessing.Pool(num_threads)
+      b_motions = pool.map(gen_motion2bin_video_sub, paths)
+    else:
+      from tqdm import tqdm
+      for vpaths in tqdm(video16_path[dtype]):
+        for vpath in vpaths:
+          b_motions = gen_motion2bin_video_sub([vpath]+args)
+
 
     return b_motions
 
@@ -1080,7 +1139,7 @@ def test_batch_videos(genderF=0, onehotF=0, K=10000, concatF=1, \
     return vsources, msources
 
 
-def load_videos(onehotF=0, vtype='all', dtype='gmr', bin_type='linear', num_bin=51):
+def load_videos(onehotF=0, vtype='all', dtype='gmr', bin_type='linear', num_bin=51, mypath = '/groups/branson/home/imd/Documents/data/fly_tracking/', include_test=True):
 
     if vtype == 'july':
         video_list = video16_july
@@ -1101,7 +1160,7 @@ def load_videos(onehotF=0, vtype='all', dtype='gmr', bin_type='linear', num_bin=
 
     video_tr_list, video_vl_list, video_te_list = [], [], []
     video_data_list = [video_tr_list, video_vl_list, video_te_list]
-    for kk in range(3):
+    for kk in range(3 if include_test else 2):
         num_video = len(video_list[kk])
         for i in range(num_video):
             print('%dth video loading' % i)
@@ -1116,7 +1175,6 @@ def load_videos(onehotF=0, vtype='all', dtype='gmr', bin_type='linear', num_bin=
             vcdata = load_vision(vision_matfile)[1:]
             NN = trx['x'].shape[0]
          
-            mypath = '/groups/branson/home/imd/Documents/data/fly_tracking/'
             bdata = np.load(mypath+vpath+'motion_%dbin_onehotF%d_%s.npy' % (num_bin, onehotF, bin_type))[1:]
             bdata = bdata.astype('float32')
             
@@ -1145,6 +1203,10 @@ def load_videos(onehotF=0, vtype='all', dtype='gmr', bin_type='linear', num_bin=
 
 
 def histo_motion(motiondata, vpath):
+    try:
+      from pathlib import Path
+    except ImportError:
+      from pathlib2 import Path  # python 2 backport
 
     bins = np.linspace(0,18,100)
     fig, axs = plt.subplots(2, 2, sharey=True, tight_layout=True)
@@ -1154,7 +1216,8 @@ def histo_motion(motiondata, vpath):
     axs[1,1].hist(motiondata[3,:,:10].flatten(), bins)
     axs[0,0].set_yscale('log')
     #axs[0,0].set_ylim((0,100))
-    os.makedirs('./figs/%s/' % vpath, exist_ok=True)
+    #os.makedirs('./figs/%s/' % vpath, exist_ok=True)
+    Path('./figs/%s/' % vpath).mkdir(exist_ok=True)
     plt.savefig('./figs/%s/motion_histo_male.png' % (vpath), format='png', bbox_inches='tight')
     #import pdb; pdb.set_trace()
 
@@ -1240,7 +1303,99 @@ def quick_sample_batch_videos(video_data_list, genderF=2, onehotF=0, K=10000, co
     #perm = RNG.permutation(NNN) 
     #return vsources[:,perm], msources[:,perm]
 
+def sample_batch_videos_sjb(videos, genderF=2, onehotF=0, batch_size=10000, concatF=1, \
+                        num_frames=50, etype='tr', itype='full'):
 
+    num_video = len(videos)
+
+    # Give equal number of examples to each video.  If the batch size isn't
+    # divisible by the number of videos, assign the remainder randomly
+    num, remainder = batch_size // num_video, batch_size % num_video
+    num_per_video = [num + int(i < remainder) for i in range(num_video)]
+    num_per_video = np.array(num_per_video)[np.random.permutation(num_video)]
+
+    vsources, msources = [], []
+    
+    for j in range(num_video):
+      num = num_per_video[j]
+      while num > 0:  # this loop is only necessary if some target sequences are invalid
+        vision_data, motion_data, binned_motion_data, _, basesize = videos[j]
+        male_ind, female_ind = gender_classify(basesize['majax'])
+        ind = male_ind if genderF==MALE else female_ind
+
+        # Randomly select sequences within the video
+        num_flies = len(ind)
+        num_samples = int(math.ceil(num / float(num_flies)))
+        start_times = np.random.randint(2, vision_data.shape[0] - num_frames, size=num_samples)
+        start_times.sort()
+
+        # For each starting frame and fly pair, extract target data
+        target = np.array([binned_motion_data[t : t + num_frames, ind, :] for t in start_times])
+        target = target.transpose(0, 2, 1, 3)
+        target = target.reshape(target.shape[0] * target.shape[1], target.shape[2], target.shape[3])
+        valid = target.sum(axis=(1, 2)) > 0  # to match Daniel's code, unsure why this is necessary
+        num_valid = len(valid)
+        if num_valid < target.shape[0]:
+            target = target[valid, :]
+        target = target[:min(num_valid, num), :]
+
+        # For each starting frame and fly pair, extract source feature data that concatenates
+        # vision and motion data
+        vdata = np.array([vision_data[t : t + num_frames, ind, :] for t in start_times])
+        mdata = np.array([motion_data[t : t + num_frames, ind, :] for t in start_times])
+        vdata[np.isinf(vdata)] = 0.
+        source = np.concatenate([vdata, mdata], axis=3)
+        source[np.isnan(source)] = 0.
+        source = source.transpose(0, 2, 1, 3)
+        source = source.reshape(source.shape[0] * source.shape[1], source.shape[2], source.shape[3])
+        if num_valid < source.shape[0]:
+            source = source[valid, :]
+        source = source[:min(num_valid, num), :]
+        
+        vsources.append(source)
+        msources.append(target)
+
+        print('j=%d, num=%d, num_valid=%d' % (j, num, num_valid))
+        num = num - min(num_valid, num)
+        
+        '''
+        T, F, D = vision_data.shape[0], len(ind), vision_data.shape[2]
+        M, BM = motion_data.shape[2], binned_motion_data.shape[2]
+        B, N = num_per_video[j], num_frames
+        
+        times = start_times[:, np.newaxis] + np.arange(num_frames)[np.newaxis,:]
+        times = times[:,:,np.newaxis,np.newaxis]
+        
+        # Compute indices to extract a BxNxFxD array of vision data features
+        t_inds = np.tile(times, (1, 1, F, D))
+        f_inds = np.tile(np.arange(F)[np.newaxis, np.newaxis, :, np.newaxis], (B, N, 1, D))
+        d_inds = np.tile(np.arange(D)[np.newaxis, np.newaxis, np.newaxis, :], (B, N, F, 1))
+        vdata = vision_data[t_inds, f_inds, d_inds]
+        vdata[np.isinf(vdata)] = 0.
+        
+        # Compute indices to extract a BxNxFxM array of motion features
+        t_inds = np.tile(times, (1, 1, F, M))
+        f_inds = np.tile(np.arange(F)[np.newaxis, np.newaxis, :, np.newaxis], (B, N, 1, M))
+        m_inds = np.tile(np.arange(M)[np.newaxis, np.newaxis, np.newaxis, :], (B, N, F, 1))
+        mdata = motion_data[t_inds, f_inds, m_inds]
+        
+        # Compute indices to extract a BxNxFxBM array of binned motion features
+        t_inds = np.tile(times, (1, 1, F, BM))
+        f_inds = np.tile(np.arange(F)[np.newaxis, np.newaxis, :, np.newaxis], (B, N, 1, BM))
+        m_inds = np.tile(np.arange(BM)[np.newaxis, np.newaxis, np.newaxis, :], (B, N, F, 1))
+        target = binned_motion_data[t_inds, f_inds, m_inds]
+        
+        source = np.concatenate([vdata, mdata], axis=3)
+        source[np.isnan(source)] = 0.
+        
+        vsources.append(source)
+        msources.append(target)
+        '''
+
+    vsources = np.concatenate(vsources, 0).transpose(1, 0, 2)
+    msources = np.concatenate(msources, 0).transpose(1, 0, 2)
+    perm = RNG.permutation(vsources.shape[1]) 
+    return vsources[:,perm], msources[:,perm]
 
 def sample_batch_videos(video_data_list, genderF=2, onehotF=0, K=10000, concatF=1, \
                         tau=50, etype='tr', itype='full'):
@@ -1252,6 +1407,7 @@ def sample_batch_videos(video_data_list, genderF=2, onehotF=0, K=10000, concatF=
 
     video_usecap = math.ceil(K / num_video)
     i, video_ind = 0, 0
+      
     while i < K:
 
         video_counter = 0
@@ -1310,6 +1466,7 @@ def sample_batch_videos(video_data_list, genderF=2, onehotF=0, K=10000, concatF=
                 else:
                     counter +=1
                     pass
+        print("  video %d, T=%d, F=%d, M=%d, D=%d, NN=%d" % (video_ind, T, F, M, D, NN))
 
 
         video_ind += 1
@@ -1534,10 +1691,11 @@ def parse_args():
 if __name__ == '__main__':
 
     args = parse_args()
+    percentile_bin = None
     if args.bin_type == 'perc':
         percentile_bin = get_percentile(dtype=args.dtype, num_bin=args.num_bin+2)
         np.save('./bins/percentile_%dbins' % args.num_bin, percentile_bin)
-    gen_motion2bin_video(onehotF=args.onehotF, dtype=args.dtype, bin_type=args.bin_type,  num_bin=args.num_bin)
+    gen_motion2bin_video(onehotF=args.onehotF, dtype=args.dtype, bin_type=args.bin_type,  num_bin=args.num_bin, bins=percentile_bin)
     #X_train, X_valid, X_test = gen_fly_regression()
     #sample_batch_reg(X_train, batch_sz=100)
 

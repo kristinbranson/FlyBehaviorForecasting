@@ -194,15 +194,16 @@ def load_rnn(   args, mtype='rnn',\
                 load_path=None):
 
     mpath = '/groups/branson/home/imd/Documents/janelia/research/FlyTrajPred/pytorch'
-    if 'rnn' in mtype:
+    
+    if 'skip' in mtype or 'hrnn' in mtype:
+        from flyNetwork_RNN import FlyNetworkSKIP6
+        model = FlyNetworkSKIP6(args)
+        save_path = './models/flyNetSKIP6_'
+    elif 'rnn' in mtype:
         from flyNetwork_RNN import FlyNetworkGRU
         model = FlyNetworkGRU(args)
         save_path = mpath + '/models/flyNet4_'
 
-    elif 'skip' in mtype:
-        from flyNetwork_RNN import FlyNetworkSKIP6
-        model = FlyNetworkSKIP6(args)
-        save_path = './models/flyNetSKIP6_'
 
     if cudaF: model = model.cuda()
     print('Model Load %s' % load_path)

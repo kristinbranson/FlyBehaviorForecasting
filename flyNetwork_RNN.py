@@ -103,7 +103,7 @@ class FlyNetworkSKIP6(nn.Module):
         self.out  = nn.Linear(args.h_dim, args.y_dim)
         self.dOut = args.y_dim
 
-    def forward(self, X, hidden):
+    def forward(self, X, hidden, hiddenF=False):
 
         T, B, D = X.size()
         h1, hidden1 = self.gru1(X, hidden[0])
@@ -117,7 +117,10 @@ class FlyNetworkSKIP6(nn.Module):
         h5, hidden5 = self.gru3(h4_, hidden[4])        
 
         output = self.out(h5.view(T*B, h5.shape[-1]))
-        return output, [hidden1, hidden2, hidden3, hidden4, hidden5]
+        if hiddenF:
+            return output, [hidden1, hidden2, hidden3, hidden4, hidden5], [h1, h2, h3, h4, h5]
+        else:
+            return output, [hidden1, hidden2, hidden3, hidden4, hidden5]
 
 
     def initHidden(self, batch_sz, T=1, use_cuda=1):

@@ -11,9 +11,10 @@ import torch
 from tqdm import tqdm
 from util import *
 from util_fly import *
-from gen_dataset import load_eyrun_data, combine_vision_data, \
-                        video16_path, gender_classify, load_vision
-from simulate_rnn import get_nstep_comparison_rnn, get_simulate_fly
+from gen_dataset import load_eyrun_data_sjb, combine_vision_data_sjb as combine_vision_data, \
+                        video16_path, gender_classify, gender_classify_sjb, \
+                        load_vision_sjb
+from simulate_rnn_sjb import get_nstep_comparison_rnn, get_simulate_fly
 from simulate_autoreg import simulate_next_t_steps
 
 VDATA=0
@@ -31,33 +32,73 @@ TRAIN=0
 VALID=1
 TEST=2
 
+
+'''
+# For temporary debugging, TODO remove
+# For real_flies_simulatePlan_RNNs()
+vpath=video_list[TEST][testvideo_num]
+hiddens_male=None
+hiddens_female=None
+mtype=args.mtype
+monlyF=abs(1-args.visionF)
+plottrxlen=100
+tsim=args.tsim
+t0=0
+t1=None
+t_dim=args.t_dim
+genDataset=False
+binwidth=2.0
+num_hid=100
+model_epoch=200000
+btype='perc'
+num_bin=args.num_bin
+gender=0
+use_cuda=args.use_cuda
+
+# For get_simulate_fly()
+model=male_model
+state=male_state
+t=t_j
+simulated_flies=simulated_male_flies
+thrd=10
+hiddens=hiddens_male
+t_dim=50
+visionF=1
+visionOnly=0
+
+fly = simulated_flies[0]
+xs,ys,thetas,a_s,bs = x,y,theta,a,b
+distF=0
+'''
+
 def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
                 simulated_male_flies, simulated_female_flies,\
                 hiddens_male=None, hiddens_female=None, mtype='rnn', \
                 monlyF=0, plottrxlen=100, tsim=1, t0=0, t1=None,\
                 t_dim=7, genDataset=False, ifold=0, binwidth=2.0,\
                 num_hid=100, model_epoch=200000, btype='linear',\
-                num_bin=51,gender=0):
+                num_bin=51,gender=0, use_cuda=1):
 
     print(mtype, monlyF, tsim)
+    device = torch.device("cuda" if use_cuda else "cpu")
 
     DEBUG = 0
     fname = 'eyrun_simulate_data.mat'
     basepath='/groups/branson/home/bransonk/behavioranalysis/code/SSRNN/SSRNN/Data/bowl/'
     matfile = basepath+vpath+fname
-    (trx,motiondata,params,basesize) = load_eyrun_data(matfile)
+    (trx,motiondata,params,basesize) = load_eyrun_data_sjb(matfile, device=device)
 
     vision_matfile = basepath+vpath+'movie-vision.mat'
-    vc_data = load_vision(vision_matfile)[1:]
+    vc_data = load_vision_sjb(vision_matfile, device=device)[1:]
 
 
     if 'perc' in btype:
         binedges = np.load('./bins/percentile_%dbins.npy' % num_bin)
-        params['binedges'] = binedges
+        params['binedges'] = torch.tensor(binedges).to(device)
     else:
         binedges = params['binedges']
 
-    male_ind, female_ind = gender_classify(basesize['majax'])
+    male_ind, female_ind = gender_classify_sjb(basesize['majax'])
     params['mtype'] = mtype
 
 
@@ -65,40 +106,40 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
     print("TSIM: %d" % tsim)
     
     if t1 is None: t1= trx['x'].shape[0] - tsim
-    x = trx['x'][t0+t_dim,:].copy()
-    y = trx['y'][t0+t_dim,:].copy()
-    theta = trx['theta'][t0+t_dim,:].copy()
+    x = trx['x'][t0+t_dim,:].clone()
+    y = trx['y'][t0+t_dim,:].clone()
+    theta = trx['theta'][t0+t_dim,:].clone()
     
     # even flies are simulated, odd are real
-    n_flies = len(x)
-    real_flies = np.arange(0,n_flies,1)
+    n_flies = x.shape[0]
+    real_flies = torch.arange(0,n_flies,1, device=device)
     simulated_flies = [] 
 
-    b = basesize['minax'].copy()
-    a = trx['a'][t0+t_dim,:].copy()
-    l_wing_ang = trx['l_wing_ang'][t0+t_dim,:].copy()
-    r_wing_ang = trx['r_wing_ang'][t0+t_dim,:].copy()
-    l_wing_len = trx['l_wing_len'][t0+t_dim,:].copy()
-    r_wing_len = trx['r_wing_len'][t0+t_dim,:].copy()
+    b = basesize['minax'].clone()
+    a = trx['a'][t0+t_dim,:].clone()
+    l_wing_ang = trx['l_wing_ang'][t0+t_dim,:].clone()
+    r_wing_ang = trx['r_wing_ang'][t0+t_dim,:].clone()
+    l_wing_len = trx['l_wing_len'][t0+t_dim,:].clone()
+    r_wing_len = trx['r_wing_len'][t0+t_dim,:].clone()
 
-    xprev = x.copy()
-    yprev = y.copy()
-    thetaprev = theta.copy()
+    xprev = x.clone()
+    yprev = y.clone()
+    thetaprev = theta.clone()
 
     # simulated_male_flies = simulated_male_flies[:len(male_ind)]
     #simulated_female_flies = simulated_female_flies[:len(female_ind)]
-    simulated_male_flies = np.arange(len(male_ind))
-    simulated_female_flies = np.arange(len(male_ind),len(male_ind)+len(female_ind))
+    simulated_male_flies = torch.arange(len(male_ind), device=device)
+    simulated_female_flies = torch.arange(len(male_ind),len(male_ind)+len(female_ind), device=device)
 
 
     if 'rnn' in mtype or 'skip' in mtype:
-        hiddens_male   = [male_model.initHidden(1, use_cuda=0) \
+        hiddens_male   = [male_model.initHidden(1, use_cuda=use_cuda) \
                                 for i in range(len(simulated_male_flies))]
-        hiddens_female = [female_model.initHidden(1, use_cuda=0)\
+        hiddens_female = [female_model.initHidden(1, use_cuda=use_cuda)\
                                 for i in range(len(simulated_female_flies))]
 
 
-    simulated_flies = np.hstack([simulated_male_flies, simulated_female_flies])
+    simulated_flies = torch.cat([simulated_male_flies, simulated_female_flies])
     NUM_FLY = len(simulated_male_flies) + len(simulated_female_flies)
     print('Number of flies : %d' % NUM_FLY)
     if 'rnn' in mtype or 'skip' in mtype:
@@ -106,18 +147,20 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
         female_state = [None]*(len(female_ind))
 
     elif 'conv' in mtype:
-        state = np.zeros(( NUM_FLY, NUM_VFEAT+NUM_MFEAT, t_dim ))
+        state = torch.zeros(( NUM_FLY, NUM_VFEAT+NUM_MFEAT, t_dim ), device=device)
 
     elif 'lr' in mtype or 'nn' in mtype:
-        state = np.zeros(( NUM_FLY, NUM_MFEAT, t_dim ))
+        state = torch.zeros(( NUM_FLY, NUM_MFEAT, t_dim ), device=device)
 
-    feat_motion  = motiondata[:,t0+t_dim,:].copy()
-    mymotiondata = np.zeros(motiondata.shape)
+    feat_motion  = motiondata[:,t0+t_dim,:].clone()
+    mymotiondata = torch.zeros(motiondata.shape, device=device)
     predictions_flies, flyvisions = [], []
     vel_errors, pos_errors, theta_errors, wing_ang_errors, wing_len_errors \
                                                 = [], [], [], [], []
     acc_rates, loss_rates = [], []
     simtrx_numpys, dataset, dataset_frames = [], [], []
+
+        
     print('Simulation Start %d %d %d...\n' % (t0+t_dim,t1,tsim))
 
 
@@ -172,21 +215,21 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
         for flyi in range(len(real_flies)):
 
             fly = real_flies[flyi]
-            x[fly] = trx['x'][t,fly].copy()
-            y[fly] = trx['y'][t,fly].copy()
-            theta[fly] = trx['theta'][t,fly].copy()
-            a[fly] = trx['a'][t,fly].copy()
-            l_wing_ang[fly] = trx['l_wing_ang'][t,fly].copy()
-            r_wing_ang[fly] = trx['r_wing_ang'][t,fly].copy()
-            l_wing_len[fly] = trx['l_wing_len'][t,fly].copy()
-            r_wing_len[fly] = trx['r_wing_len'][t,fly].copy()
+            x[fly] = trx['x'][t,fly].clone()
+            y[fly] = trx['y'][t,fly].clone()
+            theta[fly] = trx['theta'][t,fly].clone()
+            a[fly] = trx['a'][t,fly].clone()
+            l_wing_ang[fly] = trx['l_wing_ang'][t,fly].clone()
+            r_wing_ang[fly] = trx['r_wing_ang'][t,fly].clone()
+            l_wing_len[fly] = trx['l_wing_len'][t,fly].clone()
+            r_wing_len[fly] = trx['r_wing_len'][t,fly].clone()
 
             # motiondata[:,t,fly] = corresponds to movement from t-1 to t
             feat_motion[:,fly] = motiondata[:,t,fly]
 
 
             if 'conv' in mtype:
-                state = np.zeros(( NUM_FLY, NUM_VFEAT+NUM_MFEAT, t_dim ))
+                state = torch.zeros(( NUM_FLY, NUM_VFEAT+NUM_MFEAT, t_dim ), device=device)
                 state[:,:8,:] = motiondata[:,t-50:t,:].transpose(2,0,1)
                 state[:,8:,:] = vc_data[t-50:t,:,:].transpose(1,2,0)
 
@@ -227,17 +270,17 @@ def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
                                 t_dim=t_dim, num_bin=num_bin)
         
         if genDataset:
-            flyvisions = np.asarray(flyvisions)
+            flyvisions = torch.stack(flyvisions, 0)
             data = combine_vision_data(simtrx_curr, flyvisions, num_fly=NUM_FLY, num_burn=2)
             dataset.append(data)
             dataset_frames.append(t)
-        
+            
         simtrx_numpy = simtrx2numpy(simtrx_curr)
         simtrx_numpys.append(simtrx_numpy)
         if 1:
             vel_error, pos_error, theta_error, wing_ang_error, wing_len_error = [], [], [], [], []
             for tt in range(1,tsim):#[1,3,5,10,15]:
-                results = get_error(simtrx_curr, trx, t, tt)
+                results = get_error_sjb(simtrx_curr, trx, t, tt)
                 vel_error.append(results[2])
                 pos_error.append(results[3])
                 theta_error.append(results[4])
@@ -383,8 +426,6 @@ def simtrx2numpy(simtrx):
 
     return np.asarray(numpy_trx)
 
-
-
 def get_error(model_trx, data_trx, time, nstep):
 
     assert nstep>0, 'Nstep should be greater than 0'
@@ -438,6 +479,61 @@ def get_error(model_trx, data_trx, time, nstep):
     return np.sqrt(x_error), np.sqrt(y_error), \
             velocity_error, position_error, \
                 theta_error, wing_ang_error, wing_len_error 
+
+
+def get_error_sjb(model_trx, data_trx, time, nstep):
+
+    assert nstep>0, 'Nstep should be greater than 0'
+    x_data = data_trx['x'][time+nstep,:]
+    y_data = data_trx['y'][time+nstep,:]
+    theta_data = data_trx['theta'][time+nstep,:]
+    l_wing_ang_data= data_trx['l_wing_ang'][time+nstep,:]
+    r_wing_ang_data= data_trx['r_wing_ang'][time+nstep,:]
+    l_wing_len_data = data_trx['l_wing_len'][time+nstep,:]
+    r_wing_len_data = data_trx['r_wing_len'][time+nstep,:]
+
+    x_model = model_trx['x'][nstep,:]
+    y_model = model_trx['y'][nstep,:]
+    theta_model = model_trx['theta'][nstep,:]
+    l_wing_ang_model = model_trx['l_wing_ang'][nstep,:]
+    r_wing_ang_model = model_trx['r_wing_ang'][nstep,:]
+    l_wing_len_model = model_trx['l_wing_len'][nstep,:]
+    r_wing_len_model = model_trx['r_wing_len'][nstep,:]
+
+    x_error = (x_data - x_model)**2
+    y_error = (y_data - y_model)**2
+    position_error = torch.sqrt(x_error + y_error)
+
+    vel_x_data  = data_trx['x'][time+nstep,:] - data_trx['x'][time+nstep-1,:]
+    vel_y_data  = data_trx['y'][time+nstep,:] - data_trx['y'][time+nstep-1,:]
+    vel_x_model = model_trx['x'][nstep,:] - model_trx['x'][nstep-1,:]
+    vel_y_model = model_trx['y'][nstep,:] - model_trx['y'][nstep-1,:]
+    vel_x_error = (vel_x_data - vel_x_model)**2
+    vel_y_error = (vel_y_data - vel_y_model)**2
+    velocity_error = torch.sqrt(vel_x_error + vel_y_error)
+
+    theta_diff = torch.abs(theta_data - theta_model)
+    theta_error = (theta_diff > np.pi) * (2*np.pi-theta_diff)\
+                        + (theta_diff <= np.pi) * theta_diff
+
+    l_wing_len_error = torch.abs(l_wing_len_data - l_wing_len_model)
+    r_wing_len_error = torch.abs(r_wing_len_data - r_wing_len_model)
+
+
+    l_wing_ang_diff = torch.abs(l_wing_ang_data - l_wing_ang_model)
+    l_wing_ang_error = (l_wing_ang_diff > np.pi) * (2*np.pi-l_wing_ang_diff)\
+                        + (l_wing_ang_diff <= np.pi) * l_wing_ang_diff
+
+    r_wing_ang_diff = torch.abs(r_wing_ang_data - r_wing_ang_model)
+    r_wing_ang_error = (r_wing_ang_diff > np.pi) * (2*np.pi-r_wing_ang_diff)\
+                        + (r_wing_ang_diff <= np.pi) * r_wing_ang_diff
+
+    wing_ang_error = (l_wing_ang_error + r_wing_ang_error) * 0.5
+    wing_len_error = (l_wing_len_error + r_wing_len_error) * 0.5
+
+    return torch.sqrt(x_error).cpu().numpy(), torch.sqrt(y_error).cpu().numpy(), \
+            velocity_error.cpu().numpy(), position_error.cpu().numpy(), \
+                theta_error.cpu().numpy(), wing_ang_error.cpu().numpy(), wing_len_error.cpu().numpy()
 
 
 
@@ -896,14 +992,21 @@ def parse_args():
     parser.add_argument('--datapath', type=str, default='/groups/branson/home/bransonk/behavioranalysis/code/SSRNN/SSRNN/Data/bowl/')
     parser.add_argument('--save_path_male', type=str, default=None)
     parser.add_argument('--save_path_female', type=str, default=None)
+    parser.add_argument('--use_cuda', type=int, default=1)
 
     return check_args(parser.parse_args())
 
 
-if __name__ == '__main__':
+if True:
     fname = 'eyrun_simulate_data.mat'
 
     args = parse_args()
+    args.dtype = 'gmr'
+    args.mtype = 'rnn50'
+    args.tsim = 30
+    args.basepath = './'
+    args.save_path_male = './models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000'
+    args.save_path_female = './models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000'
     args.y_dim = args.num_bin*args.num_mfeat
     video_list = video16_path[args.dtype]
 
@@ -943,7 +1046,7 @@ if __name__ == '__main__':
                             simulated_male_flies, simulated_female_flies,\
                             monlyF=abs(1-args.visionF), ifold=ifold,\
                             tsim=args.tsim, mtype=args.mtype, t_dim=args.t_dim,\
-                            num_bin=args.num_bin)
+                            num_bin=args.num_bin, use_cuda=args.use_cuda, btype=args.btype)
 
 
         elif args.mtype=='nn4_cat50' or args.mtype=='conv4_cat50':
@@ -980,7 +1083,8 @@ if __name__ == '__main__':
                             monlyF=abs(1-args.visionF), ifold=ifold, \
                             model_epoch=model_epoch, \
                             tsim=args.tsim, mtype=args.mtype,\
-                            t_dim=args.t_dim, num_bins=args.num_bin)
+                            t_dim=args.t_dim, num_bins=args.num_bin, \
+                            use_cuda=args.use_cuda)
 
 
 
@@ -988,7 +1092,7 @@ if __name__ == '__main__':
 
             ### LR MO ###
             model_epoch=200000
-            from simulate_rnn import model_selection
+            from simulate_rnn_sjb import model_selection
             for testvideo_num in range(0,len(video_list[TEST])):
 
                 vpath = video_list[TEST][testvideo_num]
@@ -1007,7 +1111,7 @@ if __name__ == '__main__':
                     model_selection(args, None, None, \
                         args.videotype, args.mtype, model_epoch, \
                         args.h_dim, simulated_male_flies, simulated_female_flies, \
-                        dtype=args.dtype, btype=args.btype)
+                        dtype=args.dtype, btype=args.btype, use_cuda=args.use_cuda)
 
                 for ifold in range(10):
                     print('ifold %d of %d' % (ifold, 10))
@@ -1044,7 +1148,7 @@ if __name__ == '__main__':
 
                 vpath = video_list[TEST][testvideo_num]
                 print ('testvideo %d %s' % (testvideo_num, vpath))
-                baseline1_constVel_nstep_prediction(vpath, tsim=agrs.tsim)
+                baseline1_constVel_nstep_prediction(vpath, tsim=args.tsim)
 
 
 
