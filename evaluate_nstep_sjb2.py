@@ -1,373 +1,185 @@
+import torch
+import numpy as np
+from tqdm import tqdm
+import argparse
+import os
 
+from utils import get_real_positions_batch, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors
+from rnn_utils import run_rnns, run_constant_velocity_baseline, run_stay_still_baseline
+from fly_utils import load_fly_models, compute_model_inds, load_video, feature_dims, ERROR_TYPES_FLIES, \
+    VELOCITY_FIELDS_FLIES, FLY_DATASET_PATH, video16_path, TEST
 
-def get_real_positions(t, trx, motiondata, T, batch_sz):
-    '''
-    Extract a batch of fly trajectories (positions) and their respective features (feats)
-    from the dataset trx
-    Let positions be a a dictionary of fly positions (each key is something like
-    x, y, l_wing_ang, etc.).  positions[k] will be a batch_sz X T X num_flies tensor 
-    trajectories of T timesteps sampled starting at frame t
-    and feats will be a batch_sz X num_feats X T X num_flies tensor extracted from 
-    motiondata
-    '''
-    positions = {}
-    for k,v in trx.items():
-        p = [v[s : s + tsim, :] for s in range(t, t + T * batch_sz, batch_sz)]
-        positions[k] = torch.stack(p, 0)
-    motion_feats = [motiondata[:, s : s + T, :] for s in range(t, t + T * batch_sz, batch_sz)]
-    return positions, motion_feats
-
-def compute_features(positions, params, keys=['x', 'y', 'theta', 'a', 'b']):
-    device = positions.values()[0].device
-
-    x = positions['x']  # batch_sz X T X num_flies
-    y = positions['y']  # batch_sz X T X num_flies
-    theta = positions['theta']  # batch_sz X T X num_flies
-    a = positions['a']  # batch_sz X T X num_flies
-    b = positions['b']  # batch_sz X T X num_flies
-
-    if(x.isnan().any() or y.isnan().any() or theta.isnan().any())
-        flyvision = torch.zeros((params['n_oma']), device=device)
-        chambervision = torch.zeros((params['n_oma']), device=device)
-        return (flyvision, chambervision)
+                                    
+def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
+                                  run_prediction_model=run_rnns,
+                                  error_types=None, velocity_fields=None, all_errors=None):
+    """
+    Compute and save nstep errors on a single video for simulated trajectories of
+    length args.t_sim frames using args.t_past frames from the past
+    """
+    trx,motiondata,params,basesize = video
+    t_stride = args.t_stride  # spacing between frames to sample trajectories in each video
+    T_past = args.t_past # number of past frames used to load the RNN hidden state
+    T_sim = args.t_sim   # number of random frames to simulate a trajectory for
+    batch_sz = args.batch_sz  # batch_sz X num_flies will be processed in each batch
     
-    # vision bin size
-    step = 2.*np.pi/params['n_oma']
-    
-    # flip
-    theta_r = -theta + np.pi  # batch_sz X T X num_flies
-    
-    # for rotating into fly's coordinate system
-    cos_theta_r, sin_theta_r = torch.cos(theta_r), torch.sin(theta_r)
-    cos_theta_pi2_r, sin_theta_pi2_r = torch.cos(theta_r), torch.sin(theta_r)
-    xs = torch.cat([x + cos_theta_r * a, x - cos_theta_r * a,
-                    x_ + cos_theta_pi2_r * b, x_ - cos_theta_pi2_r * b], 3)
-    ys = torch.cat([y + sin_theta_r * a, y - sin_theta_r * a,
-                    y_ + sin_theta_pi2_r * b, y_ - sin_theta_pi2_r * b], 3)
+    t_start = args.t_start if args.t_start is not None else 0
+    t_end = args.t_end if args.t_end is not None else trx['x'].shape[0]
 
-    # compute other flies view
-
-    # initialize everything to be infinitely far away
-    flyvision = torch.full([params['n_oma']], np.inf, device=device)
-
-    # other flies positions ends of axes
-    x_ = torch.tile(x[:,:,:,None], (1, 1, 1, n_flies)) # batch_sz X T X num_flies X num_flies
-    y_ = torch.tile(y[:,:,:,None], (1, 1, 1, n_flies)) # batch_sz X T X num_flies X num_flies
-    ax_a = torch.tile(a[:,:,:,None], (1, 1, 1, n_flies)) / 2 # batch_sz X T X num_flies X num_flies
-    ax_b = torch.tile(b[:,:,:,None], (1, 1, 1, n_flies)) / 2 # batch_sz X T X num_flies X num_flies
-    xs = torch.tile(xs[:,:,:,None,:], (1, 1, 1, n_flies, 1)) # batch_sz X T X num_flies X num_flies X 4
-    ys = torch.tile(ys[:,:,:,None,:], (1, 1, 1, n_flies, 1)) # batch_sz X T X num_flies X num_flies X 4
-    
-    # convert to this fly's coord system
-    dx = xs - x[:,:,:,None,None] # batch_sz X T X num_flies X num_flies X 4
-    dy = ys - y[:,:,:,None,None] # batch_sz X T X num_flies X num_flies X 4
-    dist = torch.sqrt(dx**2 + dy**2) # batch_sz X T X num_flies X num_flies X 4
-    dx = dx / dist # batch_sz X T X num_flies X num_flies X 4
-    dy = dy / dist # batch_sz X T X num_flies X num_flies X 4
-    angle = torch.atan2(cos_theta_r * dy - sin_theta_r * dx,
-                        cos_theta_r * dx + sin_theta_r * dy)
-    angle = torch.remainder(angle,2.*np.pi) # batch_sz X T X num_flies X num_flies X 4
-
-    # no -1 because of zero-indexing
-    angle_bin = torch.floor(angle / step).int() # batch_sz X T X num_flies X num_flies X 4
-
-    dists_bin_inf = torch.full([batch_sz, T, num_flies, num_flies, num_bins], np.inf)
-    dists_bin = dist.min(4).repeat([1, 1, 1, 1, num_bins]) 
-    min_bin, max_bin = angle_bin.min(4), angle_bin.max(4)
-    R = torch.arange(params['n_oma']).repeat([batch_sz, T, num_flies, num_flies, num_bins])
-    dists_bin = torch.where((max_bin - min_bin) * 2 < num_bins - 1,
-                            torch.where(R >= min_bin & R < max_bin, dists_bin, dists_bin_inf),
-                            torch.where(R <= min_bin | R >= max_bin, dists_bin, dists_bin_inf))
-    dists_bin[torch.eye(num_flies).repeat([batch_sz, T, 1, 1, num_bins])] = np.inf
-   
-    for j in range(n_flies):
-        if np.isnan(x_[j].item()):
-            continue
-            
-        b = b_all[j,:]
-        f_dist = dist[j,:]
-
-        if torch.any(torch.isnan(b)).item() or torch.any(torch.isnan(f_dist)).item():
-            raise Exception(ValueError,'nans found in flyvision')
-
-        mi, ma = torch.min(b), torch.max(b)
-        if ma - mi*2 < params['n_oma']-1-ma:
-            bs = torch.arange(mi,ma+1, device=device)
-        else:
-            bs = torch.cat((torch.arange(0,mi+1, device=device),
-                            torch.arange(ma,params['n_oma'], device=device)))
-
-        #print "j = " + str(j) + ", bs = " + str(bs)
-        flyvision[bs] = torch.min(flyvision[bs],torch.min(f_dist))
-
-    # compute chamber view
-    chambervision = torch.full([params['n_oma']], np.inf, device=device)
-    dx = params['J'] - x
-    dy = params['I'] - y
-    dist = torch.sqrt(dx**2 + dy**2)
-    dx = dx/dist
-    dy = dy/dist
-    angle = torch.atan2(rotvec[0]*dy - rotvec[1]*dx,
-                       rotvec[0]*dx + rotvec[1]*dy)
-    angle = torch.remainder(angle,2.*np.pi)
-    if torch.any(torch.isnan(angle)).item():
-        raise Exception(ValueError,'angle to arena wall is nan')
-    #angle[np.isnan(angle)] = 0. ##THIS LINE ADDED BY DANIEL.
-    b = torch.floor(angle / step).long()
-    b = b.clamp(max=params['n_oma']-1)
-    chambervision[b] = dist
-
-    # interpolate / extrapolate gaps
-    notfilled = torch.ones(chambervision.shape, device=device)
-    notfilled[b] = 0
-    false_t = torch.Tensor([False]).to(device)
-    t1s = torch.nonzero((torch.cat((false_t,notfilled[:-1]))==False) & (notfilled==True))
-    t2s = torch.nonzero((notfilled==True) & (torch.cat((notfilled[1:],false_t))==False))
-    for c in range(t1s.shape[0]):
-        t1 = t1s[c]
-        t2 = t2s[c]
-        t2_n = (t2+1).clamp(max=chambervision.shape[0]-1)
-        t1_p = (t2-1).clamp(min=0)
-        nt = t2_n-t1_p
-        chunk = (chambervision[t2_n]-chambervision[t1_p])/nt
-        chambervision[t1:t2+1] = chambervision[t1_p] + torch.arange(1,nt.item(), device=device)*chunk
-
-    #import pdb; pdb.set_trace()
-    flyvision = flyvision / params['PPM']
-    chambervision = chambervision / params['PPM']
-  
-    #global fly_vision
-    #global chamber_vision
-    #if np.sum(np.isnan(fly_vision)) > 0:
-    #    fly_vision[0][np.isnan(fly_vision)[0]] = 0
-    #if np.sum(np.isnan(chamber_vision)) > 0:
-    #    chamber_vision[0][np.isnan(fly_vision)[0]] =0 
-    #fly_vision.append(flyvision)
-    #chamber_vision.append(chambervision)
-
-    #global max_fly_vision
-    #global max_chamber_vision
-    #global min_fly_vision 
-    #global min_chamber_vision
-
-    #max_fly_vision     = max([max_fly_vision, np.max(flyvision[flyvision != np.inf])])
-    #max_chamber_vision = max([max_chamber_vision, np.max(chambervision[chambervision != np.inf])])
-    #min_fly_vision     = min([min_fly_vision, np.min(flyvision[flyvision != -np.inf])])
-    #min_chamber_vision = min([min_chamber_vision, np.min(chambervision[chambervision != -np.inf])])
-
-    flyvision_dist = flyvision[:]
-    chambervision_dist = chambervision[:]
-
-    flyvision = 1 - torch.clamp(.05 * torch.clamp(flyvision - 1., min=0.)**0.6, max=1.)
-    chambervision = torch.clamp(.5**(((chambervision - params['mindist']) * .4) * 1.3), max=1.)
-
-    if distF: return flyvision_dist, chambervision_dist
-    return flyvision, chambervision
-
-
-def run_rnns(models, T, start_positions, start_feat_motion, params):
-    num_real_frames = start_positions.values()[0].shape[1]
-    hiddens = [m['hidden'] for m in models]
-    results = []
-    
-    for t in range(T):
-        if t < num_real_frames:
-            # Extract fly positions and motion from real trajectories
-            positions = start_positions[:, t, :]
-            feat_motion = start_feat_motion[:, :, t, :]
-        else:
-            # Update fly positions from the last simulated motion prediction
-            feat_motion = feat_motion_new
-            positions = positions_new
-            
-        feats = compute_features(positions, params)
-        feat_motion_new = feat_motion.clone()
-        hiddens_new = []
-        for i, (model, hidden) in enumerate(zip(models, hiddens)):
-            inds = model['inds']
-            feats_m = feats[:, inds, :]
-            preds, hidden = one_step_simulate_rnn(model['model'], hidden, feats_m, 
-                        num_bin=num_bin, batch_sz=positions.shape[0], teacherForce=0)
-            
-            preds = preds.reshape([params['n_motions'], params['binedges'].shape[0]-1])
-            binscores = preds.flatten()
-            motion = binscores2motion(binscores, params)
-            feat_motion_new[:, :, :, inds] = motion
-            hiddens_new.append(hidden)
-
-        positions_new = update_positions(positions, feat_motion_new, params)
-        results.append({'hidden': hiddens_new, 'positions': positions_new,
-                        'feat_motion': feat_motion_new})
-    return results
-
-def real_flies_simulatePlan_RNNs(vpath, male_model, female_model,\
-                simulated_male_flies, simulated_female_flies,\
-                hiddens_male=None, hiddens_female=None, mtype='rnn', \
-                monlyF=0, plottrxlen=100, tsim=1, t0=0, t1=None,\
-                t_dim=7, genDataset=False, ifold=0, binwidth=2.0,\
-                num_hid=100, model_epoch=200000, btype='linear',\
-                num_bin=51,gender=0, use_cuda=1):
-
-    print(mtype, monlyF, tsim)
-    device = torch.device("cuda" if use_cuda else "cpu")
-
-    DEBUG = 0
-    fname = 'eyrun_simulate_data.mat'
-    basepath='/groups/branson/home/bransonk/behavioranalysis/code/SSRNN/SSRNN/Data/bowl/'
-    matfile = basepath+vpath+fname
-    (trx,motiondata,params,basesize) = load_eyrun_data_sjb(matfile, device=device)
-
-    vision_matfile = basepath+vpath+'movie-vision.mat'
-    vc_data = load_vision_sjb(vision_matfile, device=device)[1:]
-
-
-    if 'perc' in btype:
-        binedges = np.load('./bins/percentile_%dbins.npy' % num_bin)
-        params['binedges'] = torch.tensor(binedges).to(device)
-    else:
-        binedges = params['binedges']
-
-    male_ind, female_ind = gender_classify_sjb(basesize['majax'])
-    params['mtype'] = mtype
-
-    #initial pose 
-    print("TSIM: %d" % tsim)
-    
-    if t1 is None:
-        t1= trx['x'].shape[0] - tsim
-        
-    simulated_male_flies = torch.arange(len(male_ind), device=device)
-    simulated_female_flies = torch.arange(len(male_ind),len(male_ind)+len(female_ind),
-                                          device=device)
-
-    predictions_flies, flyvisions = [], []
-    vel_errors, pos_errors, theta_errors, wing_ang_errors, wing_len_errors \
-                                                = [], [], [], [], []
-    acc_rates, loss_rates = [], []
-    simtrx_numpys, dataset, dataset_frames = [], [], []
-
-        
-
-    models = [{'name': 'male', 'model': male_model, 'inds': simulated_male_flies},
-              {'name': 'female', 'model': female_model, 'inds': simulated_female_flies}
-    ]
     for m in models:
-        m['hidden'] = m['model'].initHidden(batch_sz * len(v['inds']), use_cuda=use_cuda)
-        m['state'] = None
+        m['hidden'] = m['model'].initHidden(batch_sz * len(m['inds']), use_cuda=args.use_cuda)
     
-    print('Simulation Start %d %d %d...\n' % (t0+t_dim,t1,tsim))
-    
-    progress = tqdm(enumerate(range(t0+t_dim,t1,tsim*batch_sz)))
+    print('Simulation Start %d %d %d...\n' % (t_start, t_end, T_sim))
+
+    all_simulated_positions = {}
+    progress = tqdm(enumerate(range(t_start + T_past, t_end - T_sim, t_stride * batch_sz)))
     for ii, t in progress:
-        print(ii, t)
+        batch_sz = min(args.batch_sz, (trx['x'].shape[0] - t) // t_stride)
+        if batch_sz != args.batch_sz:
+            for m in models:
+                m['hidden'] = m['model'].initHidden(batch_sz * len(m['inds']),
+                                                    use_cuda=args.use_cuda)
         
-        real_positions, real_feat_motion = \
-            get_real_positions(t - tsim, model['inds'], trx, motiondata, tsim, batch_sz)
+        # Extract real fly positions from the dataset
+        past_positions, past_feat_motion = \
+            get_real_positions_batch(t - T_past, trx, T_past, t_stride, batch_sz,
+                                     basesize=basesize, motiondata=motiondata)
+        add_velocities(past_positions, velocity_fields)
+        future_positions = \
+            get_real_positions_batch(t, trx, T_sim, t_stride, batch_sz, basesize=basesize)
+        add_velocities(future_positions, velocity_fields, prev=past_positions)
+                                    
+        # Run the RNN, first using the real fly positions from t-T_past:t, then using
+        # simulated frames from t:t+T_sim
+        results = run_prediction_model(models, T_past + T_sim, past_positions, past_feat_motion, params,
+                           basesize)
 
-        # Run the RNN, first using the real fly positions from t-tsim:t
-        run_rnns(models,  2 * tsim, real_positions, real_feat_motion)
-        
-        if genDataset:
-            flyvisions = torch.stack(flyvisions, 0)
-            data = combine_vision_data(simtrx_curr, flyvisions, num_fly=NUM_FLY, num_burn=2)
-            dataset.append(data)
-            dataset_frames.append(t)
-            
-        simtrx_numpy = simtrx2numpy(simtrx_curr)
-        simtrx_numpys.append(simtrx_numpy)
-        if 1:
-            vel_error, pos_error, theta_error, wing_ang_error, wing_len_error = [], [], [], [], []
-            for tt in range(1,tsim):#[1,3,5,10,15]:
-                results = get_error_sjb(simtrx_curr, trx, t, tt)
-                vel_error.append(results[2])
-                pos_error.append(results[3])
-                theta_error.append(results[4])
-                wing_ang_error.append(results[5])
-                wing_len_error.append(results[6])
+        # Store simulated fly positions
+        simulated_positions = {k: torch.cat([r['positions'][k] for r in results[T_past:]], 1) \
+                               for k in results[0]['positions']}
+        add_velocities(simulated_positions, velocity_fields, prev=results[T_past-1]['positions'])
+        all_simulated_positions = {k: ((all_simulated_positions[k] \
+                                        if k in all_simulated_positions else []) + \
+                                       [v.cpu().numpy()]) for k, v in simulated_positions.items()}
 
-            if 0:
-                loss, acc_rate = get_loss_change_motion(predictions, \
-                                                        motiondata, t,\
-                                                        gender)
-                acc_rates.append(acc_rate)
-                loss_rates.append(loss)
-                progress.set_description('Accuracy : %f, Loss %f' % (acc_rate, loss))
+        # compute nstep errors
+        errors = compute_position_errors(simulated_positions, future_positions, error_types)
 
-            vel_error = np.asarray(vel_error)
-            pos_error = np.asarray(pos_error)
-            theta_error = np.asarray(theta_error)
-            wing_ang_error = np.asarray(wing_ang_error)
-            wing_len_error = np.asarray(wing_len_error)
+        progress_str = "t=%d, Mean Errors: " % t
+        if all_errors is not None:
+            progress_str += update_datasetwide_position_errors(all_errors, errors) 
+        progress.set_description((progress_str))
 
-            vel_errors.append(vel_error)
-            pos_errors.append(pos_error)
-            theta_errors.append(theta_error)
-            wing_ang_errors.append(wing_ang_error)
-            wing_len_errors.append(wing_len_error)
+    # Save simulated fly positions
+    makedirs('%s/simtrx/%s/' % (args.basepath, video_dir), exist_ok=True)   
+    makedirs('%s/simtrx/%s/%s' % (args.basepath, video_dir, args.model_type), exist_ok=True)
+    for k, v in all_simulated_positions.items():
+        np.save('%s/simtrx/%s/%s/%s_%s.mat' % (args.basepath, video_dir, args.model_type,
+                                               exp_name, k), np.asarray(v))
 
-            progress.set_description(('%d VEL MSE: %f POSITION MSE : %f THETA MSE %f' \
-                    + 'WING ANG MSE %f WING LEN MSE %f')
-                    % (t, np.nanmean(vel_error[-1]), np.nanmean(pos_error[-1]),\
-                    np.nanmean(theta_error[-1]), \
-                    np.nanmean(wing_ang_error[-1]), \
-                    np.nanmean(wing_len_error[-1])))
+    # Save simulated fly nstep errors
+    makedirs('%s/metrics/%s/' % (args.basepath, video_dir), exist_ok=True)   
+    makedirs('%s/metrics/%s/%s' % (args.basepath, video_dir, args.model_type), exist_ok=True)  
+    for k, v in all_errors['all_errors'].items():
+        np.save('%s/metrics/%s/%s/%s_%s.mat' % (args.basepath, video_dir, args.model_type,
+                                                exp_name, k), np.asarray(v))
+        print('Final %s error: %s' % (k, np.nanmean(np.asarray(v), axis=(0, 1, 3))))
 
-
-
-
-    if 'rnn' in mtype or 'skip' in mtype:
-        os.makedirs('./simtrx/%s/' % (vpath), exist_ok=True)   
-        os.makedirs('./simtrx/%s/%s' % (vpath, mtype), exist_ok=True)   
-        np.save('./simtrx/'+vpath+'/'+mtype+'/'+mtype+'_gender'\
-            +str(gender)+'_'+str(num_hid)+'hid_'+str(t0)+'t0_'\
-            +str(t1)+'t1_%dtsim_%s_%depoch' % (tsim, btype, model_epoch) + str(ifold), \
-            np.asarray(simtrx_numpys))
-
-    elif 'lr' in mtype:
-        os.makedirs('./simtrx/%s/' % (vpath), exist_ok=True)   
-        os.makedirs('./simtrx/%s/%s' % (vpath, mtype), exist_ok=True)   
-        np.save('./simtrx/'+vpath+'/'+mtype+'/'+mtype+'_gender'\
-            +str(gender)+'_'+str(t0)+'t0_'+str(t1)\
-            +'t1_%dtsim' % tsim + str(ifold), \
-            np.asarray(simtrx_numpys))
+    return all_simulated_positions
+    
+def compute_nstep_errors_on_dataset(video_list, args,
+                                    run_prediction_model=run_rnns,
+                                    error_types=ERROR_TYPES_FLIES,
+                                    velocity_fields=VELOCITY_FIELDS_FLIES):
+    """
 
 
+    Compute and save nstep errors on a dataset of videos for simulated trajectories of
+    length args.t_sim frames using args.t_past frames from the past
+    """
+    models = None
+    device = torch.device("cuda" if args.use_cuda else "cpu")
+    errors = {'all_errors': {}, 'sum_errors': {}, 'sum_sqr_errors': {}, 'counts': {}}
+    
+    for testvideo_num, video_dir in enumerate(video_list):
+        # Load video dataset file
+        matfile = '%s/%s/%s' % (args.dataset_path, video_dir, args.trx_name)
+        video = load_video(matfile, device=device)
+        trx,motiondata,params,basesize = video
 
-    if genDataset:
-        os.makedirs('./fakedata/%s/' % (vpath), exist_ok=True)   
-        os.makedirs('./fakedata/%s/%s' % (vpath, mtype), exist_ok=True)   
-        if 'lr' in mtype:
-            ffname = './fakedata/'+vpath+'/'+mtype+'/'+mtype+'_gender'\
-                +str(gender)+'_'+str(t0)\
-                +'t0_'+str(t1)+'t1_%dtsim' % tsim
-            np.save(ffname, np.asarray(dataset))
-            print('Data Generated Path: %s' % ffname)
+        nans = torch.isnan(motiondata)
+        if nans.any():
+            print("Found nans in motiondata, replacing with 0s")
+            motiondata[nans] = 0.
+        if 'perc' in args.bin_type:
+            binedges = np.load('./bins/percentile_%dbins.npy' % args.num_motion_bins)
+            params['binedges'] = torch.tensor(binedges).to(device)
         else:
-            np.save('./fakedata/'+vpath+'/'+mtype+'/'+mtype+'_gender'\
-                +str(gender)+'_'+str(num_hid)+'hid_'+str(t0)\
-                +'t0_'+str(t1)+'t1_%dtsim_%s_%depoch' % (tsim, btype, model_epoch), \
-                np.asarray(dataset))
-        np.save('./fakedata/'+vpath+'/frame_index_'\
-                +str(t0) +'t0_'+str(t1)+'t1_%dtsim' % (tsim), \
-                np.asarray(dataset_frames))
+            binedges = params['binedges']
+
+        params['mtype'] = args.model_type
+        if models is None:
+            args.y_dim = (binedges.shape[0] - 1) * params['n_motions']
+            args.x_dim = feature_dims(args, params)
+            models = []
+            exp_name = args.model_type
+            if args.model_type == 'baseline_const_vel':
+                velocity_fields = [k for k in trx.keys()]
+                run_prediction_model = run_constant_velocity_baseline
+            elif args.model_type == 'baseline_const_vel_pos':
+                velocity_fields = ['x', 'y', 'theta']
+                run_prediction_model = run_constant_velocity_baseline
+            elif args.model_type == 'baseline_still':
+                run_prediction_model = run_stay_still_baseline
+            else:
+                run_prediction_model = run_rnns
+                models = load_fly_models(args)
+                compute_model_inds(models, basesize)
+                exp_name = args.save_path_male.split('/')[-1]
+        
+        for i in range(args.num_random):
+            print('testvideo %d/%d, random iter %d/%d %s' % \
+                   (testvideo_num, len(video_list), i, args.num_random, video_dir))
+            compute_nstep_errors_on_video(models, video, exp_name + "_" + str(i), video_dir,
+                                          args, run_prediction_model=run_prediction_model,
+                                          error_types=error_types,
+                                          velocity_fields=velocity_fields,
+                                          all_errors=errors
+            )
+            errors['all_errors'] = {}
+            
+            
+            
+
+"""parsing and configuration"""
+def parse_args():
+    desc = "Pytorch implementation of FlyNetwork collections"
+    parser = argparse.ArgumentParser(description=desc)
+    
+    parser.add_argument('--t_stride', type=int, default=30, help='Compute nstep error over trajectories sampled every t_stride frames for each video')
+    parser.add_argument('--t_past', type=int, default=30, help='Use t_past frames from the past to initial the RNN state before simulating future frames')
+    parser.add_argument('--t_sim', type=int, default=30, help='Number of frames to simulate for each trajectory')
+    parser.add_argument('--num_random', type=int, default=10, help='Number of frames to simulate for each trajectory')
+    parser.add_argument('--dataset_path', type=str, default=FLY_DATASET_PATH, help='Location of real videos of observed trajectories')
+    parser.add_argument('--basepath', type=str, default='./', help='Location to store results')
+    parser.add_argument('--trx_name', type=str, default='eyrun_simulate_data.mat', help='Name of each video file containing tracked trajectory positions')
+    parser.add_argument('--save_path_male', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000')
+    parser.add_argument('--save_path_female', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000')
+    parser.add_argument('--use_cuda', type=int, default=1, help='Whether or not to run on the GPU')
+    parser.add_argument('--dataset_type', type=str, default='gmr', help='Name of the dataset')
+    parser.add_argument('--bin_type', type=str, default='perc', help='Method used to bin RNN predicted motion outputs')
+    parser.add_argument('--model_type', type=str, default='rnn50', help='Model architecture')
+    parser.add_argument('--h_dim', type=int, default=100, help='RNN hidden state dimensions')
+    parser.add_argument('--num_motion_bins', type=int, default=101, help='number of motion bins for RNN output')
+    parser.add_argument('--t_start', type=int, default=20, help='First frame to sample trajectories from')
+    parser.add_argument('--t_end', type=int, default=None, help='Last frame to sample trajectories from')
+    parser.add_argument('--batch_sz', type=int, default=1024, help='Number of trajectories in each batch')
+
+    return parser.parse_args()
 
 
-    visionF = 1-int(monlyF)
-    results = np.stack([vel_errors, pos_errors, theta_errors, wing_ang_errors, wing_len_errors])
-    os.makedirs('%s/metrics/%s/' % (args.basepath, vpath), exist_ok=True)   
-    os.makedirs('%s/metrics/%s/%s' % (args.basepath, vpath, mtype), exist_ok=True)   
-    if 'rnn' in mtype or 'skip' in mtype:
-        fname=args.basepath+'/metrics/'+vpath+'/'+mtype+'/'+mtype+'_'+str(t0)+'t0_'+str(t1)+'t1_%dtsim_%s_%depoch_%dfold' % (tsim, btype, model_epoch, ifold)
-    else:
-        fname=args.basepath+'/metrics/'+vpath+'/'+mtype+'/'+mtype+'_visionF'+str(visionF)+'_'+str(t0)+'t0_'+str(t1)+'t1_%dtsim_%depoch_%dfold' % (tsim, model_epoch, ifold)
-    print(fname)
-    np.save(fname, np.asarray(results))
-
-    print('Final Velocity Error %f' % (np.nanmean(vel_errors)))
-    print('Final Position Error %f' % (np.nanmean(pos_errors)))
-    print('Final Theta Error %f' % (np.nanmean(theta_errors)))
-    print('Final Wing Ang Error %f' % (np.nanmean(wing_ang_errors)))
-    print('Final Wing Len Error %f' % (np.nanmean(wing_len_errors)))
-
-    return simtrx_curr
+if __name__ == '__main__':
+    args = parse_args()
+    video_list = video16_path[args.dataset_type][TEST]
+    compute_nstep_errors_on_dataset(video_list, args)
 
