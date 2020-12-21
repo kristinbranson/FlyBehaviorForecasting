@@ -1,0 +1,67 @@
+<html>
+  <head>
+    <link rel="stylesheet" type="text/css" href="visualize_tracks.css">
+    <script src="visualize_tracks.js"></script>
+    <script>
+      var json_file = "{{JSON_FILE}}";
+      var chamber = null;
+
+      function init_chamber(id) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', json_file, true);
+        xhr.responseType = 'json';
+        xhr.onload = function() {
+          var status = xhr.status;
+          if (xhr.readyState == 4 && status === 200) {
+            chamber = new Chamber(id, xhr.response);
+            frame = document.getElementById("frame");
+            frame.max = chamber.T-1;
+            frame.value = chamber.t;
+          } else {
+      
+          }
+        };
+         xhr.send();
+      }
+
+      function synch_simulated_visible() {
+        var v = document.getElementById('simulated').value;
+        if(v == 'hide_simulated') {
+          chamber.show_all_simulated = chamber.show_first_simulated = chamber.show_best_simulated = false;
+          chamber.synch_visible();
+        } else if(v == 'show_best_simulated') {
+          chamber.show_all_simulated = chamber.show_first_simulated = false;
+          chamber.show_best_simulated = true;
+          chamber.synch_visible();
+        } else if(v == 'show_first_simulated') {
+          chamber.show_all_simulated = chamber.show_best_simulated = false;
+          chamber.show_first_simulated = true;
+          chamber.synch_visible();
+        } else if(v == 'show_all_simulated') {
+          chamber.show_all_simulated = chamber.show_first_simulated = chamber.show_best_simulated = true;
+          chamber.synch_visible();
+        }
+      }
+      function synch_show_future() {
+        chamber.show_future=document.getElementById('future').checked;
+        chamber.synch_visible();
+      }
+    </script>
+  </head>
+  <body onload="init_chamber('chamber')">
+    <div id="vis">
+      <svg id="chamber">
+      </svg>
+      <br><div id="controls">
+	<input type="checkbox" id="future" name="future" checked onchange="synch_show_future();"><label for="future"> Show Future</label>
+	<select name="simulated" id="simulated" onchange="synch_simulated_visible()" value="show_best_simulated">
+	  <option value="hide_simulated">Hide Simulated</option>
+	  <option value="show_best_simulated" selected="selected">Show Best Simulated</option>
+	  <option value="show_first_simulated">Show Random Simulated</option>
+	  <option value="show_all_simulated">Show All Simulated</option>
+	</select>
+	<input type="range" min="0" max="100" value="50" class="slider" id="frame" oninput="chamber.set_frame(this.value)">
+      </div>
+    </div>
+  </body>
+</html>

@@ -16,13 +16,16 @@ def run_rnn_one_step(model, hidden, input_variable, num_motion_feat=8, num_bin=5
     predictions = prediction.reshape([T, batch_sz, num_motion_feat, num_bin])
     return predictions, hidden
 
-def run_stay_still_baseline(models, T, start_positions, start_feat_motion, params, basesize):
-    return [{'positions': {k: v[:, -1:, :] for k, v in start_positions.items()}} for t in range(T)]
 
-def run_constant_velocity_baseline(models, T, start_positions, start_feat_motion, params, basesize):
-    return [{'positions': {k: (v[:, -1:, :] + (start_positions['vel' + k][:, -1:, :] * (t + 1) if 'vel' + k in start_positions else 0.)) for k, v in start_positions.items()}} for t in range(T)]
+def run_stay_still_baseline(models, T, num_samples, start_positions, start_feat_motion, params, basesize):
+    tm = start_positions.values()[0].shape[1] - 1
+    return [{'positions': {k: v[:, min(tm,t):min(tm,t)+1, :] for k, v in start_positions.items()}} for t in range(T)]
 
-def run_rnns(models, T, start_positions, start_feat_motion, params, basesize):
+def run_constant_velocity_baseline(models, T, num_samples, start_positions, start_feat_motion, params, basesize):
+    tm = start_positions.values()[0].shape[1] - 1
+    return [{'positions': {k: (v[:, min(tm,t):min(tm,t)+1, :] + (start_positions['vel' + k][:, min(tm,t):min(tm,t)+1, :] * (t-tm) if 'vel' + k in start_positions and t > tm else 0.)) for k, v in start_positions.items()}} for t in range(T)]
+
+def run_rnns(models, T, num_samples, start_positions, start_feat_motion, params, basesize):
     num_real_frames = start_positions.values()[0].shape[1]
     batch_sz = start_positions.values()[0].shape[0]
     hiddens = [m['hidden'] for m in models]
@@ -34,8 +37,8 @@ def run_rnns(models, T, start_positions, start_feat_motion, params, basesize):
     for t in range(T):
         if t < num_real_frames:
             # Extract fly positions and motion from real trajectories
-            positions = {k: v[:, t:t+1, :] for k,v in start_positions.items()}
-            feat_motion = start_feat_motion[:, t:t+1, :, :]
+            positions = {k: torch.stack([v[:, t:t+1, :]] * num_samples, 1).view([-1, 1, v.shape[2]]) for k,v in start_positions.items()}
+            feat_motion = torch.stack([start_feat_motion[:, t:t+1, :, :]] * num_samples, 1).view([-1, 1, start_feat_motion.shape[2], start_feat_motion.shape[3]])
         else:
             # Update fly positions from the last simulated motion prediction
             feat_motion = feat_motion_new
@@ -54,7 +57,8 @@ def run_rnns(models, T, start_positions, start_feat_motion, params, basesize):
                                              num_bin=num_motion_bins,
                                              num_motion_feat=num_motion_feat)
             
-            preds = preds.reshape([1, batch_sz, num_flies, num_motion_feat, num_motion_bins])
+            preds = preds.reshape([1, batch_sz*num_samples, num_flies, num_motion_feat,
+                                   num_motion_bins])
             motion = binscores2motion(preds, params)
             feat_motion_new[:, :, inds, :] = motion.transpose(0, 1)
             hiddens_new.append(hidden)

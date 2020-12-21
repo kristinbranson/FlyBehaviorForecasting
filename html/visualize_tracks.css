@@ -1,0 +1,55 @@
+#chamber {
+    background-color: #FFFFFF;
+    width: 90vw; 
+    height: 90vw;
+    max-height: 90vh;
+    max-width: 90vh;
+    margin: auto;
+    top:0;bottom:0; /* vertical center */
+    left:0;right:0; /* horizontal center */
+}
+
+.chamber {
+  stroke:black;
+  fill: #000000;
+  stroke-width:3;
+}
+
+.svgGroup {
+    cursor:pointer;
+}
+
+.male {
+    fill:blue;
+    stroke:#C0C0FF;
+}
+.female {
+    fill:pink;
+    stroke:#FFEFEF;
+}
+
+.triangle {
+    stroke:white;
+    stroke-width:1;
+}
+
+.track {
+    stroke-width:1;
+}
+
+.simulated {
+}
+.past {
+    stroke-width:0;
+}
+.future {
+    fill:grey;
+    stroke:grey;
+}
+
+.left_wing {
+    stroke-width:2;
+}
+.right_wing {
+    stroke-width:2;
+}
