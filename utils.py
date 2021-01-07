@@ -28,6 +28,31 @@ def get_real_positions_batch(t, trx, T, t_stride, batch_sz, basesize=None, motio
         motion_feats = torch.stack([motiondata[:, s : s + T, :] for s in range(t, t + t_stride * batch_sz, t_stride)])
         return positions, motion_feats
 
+def get_real_positions_batch_random(trx, T, batch_sz, basesize=None, motiondata=None, t_pad=2):
+    '''
+    Extract a batch of fly trajectories (positions) and their respective features (feats)
+    from the dataset trx
+    Let positions be a a dictionary of fly positions (each key is something like
+    x, y, l_wing_ang, etc.).  positions[k] will be a batch_sz X T X num_flies tensor 
+    trajectories of T timesteps sampled starting at frame t
+    and feats will be a batch_sz X num_feats X T X num_flies tensor extracted from 
+    motiondata 
+    '''
+    positions = {}
+    device = trx.values()[0].device
+    N = trx.values()[0].shape[0]
+    ts = torch.randint(t_pad, N - T - t_pad - 1, [batch_sz, 1], device=device)
+    Ts = ts + torch.arange(T, device=device).unsqueeze(0)
+    positions = {k: v[Ts, :] for k,v in trx.items()}
+    if basesize is not None:
+        positions['b'] = basesize['minax'][None, None, :].repeat([batch_sz, T, 1])
+
+    if motiondata is None:
+        return positions
+    else:
+        motion_feats = motiondata[:, Ts, :].transpose(0, 1)
+        return positions, motion_feats
+
 def add_velocities(positions, fields, prev=None):
     """
     Compute velocities based on fly positions for a subset of fields (e.g. x,y).  Each
@@ -40,18 +65,22 @@ def add_velocities(positions, fields, prev=None):
                 torch.zeros([positions[k].shape[0], 1, positions[k].shape[2]], device=device)
         positions['vel' + k] = torch.cat([first, positions[k][:, 1:, :] - positions[k][:, :-1, :]], 1)
 
-def compute_position_errors(simulated_positions, true_positions, error_types, num_samples=1):
+def compute_position_errors(simulated_positions, true_positions, error_types, num_samples=1,
+                            soft=False):
     """
     Helper function to compute different loss functions (L1, L2, and angle difference),
     possibly over multiple fields (e.g. x, y)
     """
     errors = {}
+    softmin = torch.nn.Softmin(1)
     for name, error in error_types.items():
+        weight = 1.
         if ':' in error:
             # The error is computed over multiple fields separated by '|'
             split = error.split(':')
             err = split[0]
             fields = split[1].split('|')
+            weight = float(split[2])
         else:
             # The error is computed over a single field
             err = error
@@ -59,8 +88,13 @@ def compute_position_errors(simulated_positions, true_positions, error_types, nu
 
         for f in fields:
             sim, true = simulated_positions[f], true_positions[f]
-            sim = sim.view([-1, num_samples] + list(sim.shape[1:]))
-            true = true.view([-1, 1] + list(true.shape[1:]))
+            invalid = torch.isnan(true)
+            invalid_s = invalid.repeat([s1//s2 for s1, s2 in zip(sim.shape, true.shape)])
+            true[invalid] = 0
+            sim[invalid_s] = 0
+            if sim.ndim < 4:
+                sim = sim.view([-1, num_samples] + list(sim.shape[1:]))
+                true = true.view([-1, 1] + list(true.shape[1:]))
             if err == 'ang':
                 diff = (torch.remainder(sim, 2 * np.pi) - torch.remainder(true, 2 * np.pi)).abs()
                 e = torch.where(diff > np.pi, 2 * np.pi - diff, diff)
@@ -77,8 +111,15 @@ def compute_position_errors(simulated_positions, true_positions, error_types, nu
             errors[name] = torch.sqrt(errors[name])
         elif err == 'L1' or err == 'ang' and len(fields) > 1:
             errors[name] /= len(fields)
-        
-        errors[name + '_min'] = errors[name].min(1)[0]
+
+        if weight != 1. and soft:
+            errors[name] *= weight
+
+        if soft:
+            # TODO (SJB): need scalar/weight before applying softmin
+            errors[name + '_min'] = (softmin(errors[name]) * errors[name]).sum(1)
+        else:
+            errors[name + '_min'] = errors[name].min(1)[0]
             
     return errors
 
@@ -109,7 +150,7 @@ def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'pur
     exp_names = args.exp_names.split(',')
     model_types = args.model_type.split(',')
     assert(len(exp_names) == len(model_types))
-    labels = args.labels if args.labels is not None else exp_names
+    labels = args.labels.split(',') if args.labels is not None else exp_names
     for exp_name, model_type in zip(exp_names, model_types):
         sum_errors[exp_name], sum_sqr_errors[exp_name], counts[exp_name] = {}, {}, {}
         with open('%s/metrics/%s/%s.npy' % (args.basepath, model_type, exp_name)) as f:
@@ -123,15 +164,17 @@ def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'pur
         plt.figure()
         ax = plt.axes([0,0,1,1])
         for i, exp_name in enumerate(exp_names):
-            err = sum_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)
-            sq_err = sum_sqr_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)    
-            plt.errorbar(x, err, ls=lines[i], color=colors[i], label=labels[i], lw=3, alpha=0.8)  #, yerr=np.sqrt(-err ** 2 + sq_err)
+            if k in sum_errors[exp_name]:
+                err = sum_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)
+                sq_err = sum_sqr_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)    
+                plt.errorbar(x, err, ls=lines[i], color=colors[i], label=labels[i], lw=3, alpha=0.8)  #, yerr=np.sqrt(-err ** 2 + sq_err)
 
+        plt.title(k + " error")
         plt.xlabel('N-steps')
         plt.ylabel('Error rate')
         matplotlib.rc('font', size=22)
         matplotlib.rc('axes', titlesize=22)
-        ax.legend(fontsize=20, loc='upper center', bbox_to_anchor=(0.5,1.25), ncol=3)
+        ax.legend(fontsize=20, loc='lower center', bbox_to_anchor=(0.5,1.25), ncol=3)
         makedirs('%s/figs/nstep' % (args.basepath), exist_ok=True)   
         plt.savefig('%s/figs/nstep/%s_eval.pdf' \
             % (args.basepath, k), format='pdf', bbox_inches='tight')

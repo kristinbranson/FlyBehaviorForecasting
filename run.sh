@@ -4,6 +4,7 @@
 
 # Generate feratures
 python gen_dataset.py --onehotF 0 --num_bin 101 --bin_type perc
+python gen_dataset.py --onehotF 0 --num_bin 101 --bin_type linear
 
 # Train RNN models (note: this relies on pre-existing feature files in /groups, because paths are wrong)
 CUDA_VISIBLE_DEVICES=0 nohup python -u main_gru_test.py --rnn_type gru --gender 0 --num_bin 101 --bin_type 'perc' &> nohup_gru0.out &; CUDA_VISIBLE_DEVICES=0 nohup python -u main_gru_test.py --rnn_type hrnn --gender 0 --num_bin 101 --bin_type 'perc' &> nohup_hrnn0.out

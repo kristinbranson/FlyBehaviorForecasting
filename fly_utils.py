@@ -1,10 +1,12 @@
 import torch
 import h5py
 import numpy as np
+import traceback
 
-ERROR_TYPES_FLIES = {'x': 'L1', 'y': 'L1', 'position': 'L2:x|y', 'velocity': 'L2:velx|vely',
-                     'theta': 'ang', 'wing_ang': 'ang:l_wing_ang|r_wing_ang',
-                     'wing_len': 'L1:l_wing_len|r_wing_len'}
+ERROR_TYPES_FLIES = {#'x': 'L1:x:0', 'y': 'L1:y:0',
+                     'position': 'L2:x|y:1', #'velocity': 'L2:velx|vely',
+                     'theta': 'ang:theta:50', 'wing_ang': 'ang:l_wing_ang|r_wing_ang:50',
+                     'wing_len': 'L1:l_wing_len|r_wing_len:5'}
 VELOCITY_FIELDS_FLIES = ['x', 'y']
 
 MALE=0
@@ -176,13 +178,14 @@ default_params['arena_radius'] = 476.3236
 
 
 def feature_dims(args, params):
-    return params['n_oma'] * 2 + params['n_motions']
+    return params['n_oma'] * 2 + params['n_motions'] + args.num_rand_features
 
 def compute_features(positions, feat_motion, params):
     return torch.cat(list(compute_fly_vision_features(positions, params)) + [feat_motion], 3)
 
 
 def compute_fly_vision_features(positions, params, distF=0):
+  try:
     """
     This is a ported version of Kristin/Daniel's compute_vision() function, which
     compute features that simulate a fly's vision based on the distance to other flies
@@ -190,6 +193,8 @@ def compute_fly_vision_features(positions, params, distF=0):
     adds batching support on all dimensions: batch_sz X T X num_flies
     """
     device = positions.values()[0].device
+
+    positions_np = {k: v.detach().cpu().numpy() for k,v in positions.items()}  # temporary debugging
 
     # Fly center positions (x,y), ellipse angle and minor/major axes (theta, a, b)
     x = positions['x']  # batch_sz X T X num_flies
@@ -291,6 +296,7 @@ def compute_fly_vision_features(positions, params, distF=0):
         raise Exception(ValueError, 'angle to arena wall is nan')
     angle_bin = torch.floor(angle / step_chamber).long()
     angle_bin = angle_bin.clamp(max = num_bins_chamber - 1)  # batch_sz X T X num_flies
+    torch.cuda.synchronize()
 
     # batch_sz X T X num_flies, num_bins_chamber
     # TODO: use reduce='min' or reduce='mean' when it's supported by pytorch.  Currently, when
@@ -303,21 +309,45 @@ def compute_fly_vision_features(positions, params, distF=0):
     # interpolate / extrapolate gaps in the chambervision
     # For each bin of chambervision[n,t,i,:] that is unfilled (np.inf), interpolate between the
     # previous and next filled bin in chambervision[n,t,i,:]
-    valid = chambervision != np.inf
-    invalid = chambervision == np.inf
-    ids = torch.arange(np.prod(chambervision.shape), device=device).reshape(chambervision.shape)
-    fly_ids = torch.arange(np.prod(chambervision.shape[:3]), device=device) \
+    # chambervision, valid, invalid, ids, fly_ids are batch_sz X T X num_flies X num_bins_chamber
+    # where ids provides the index into chambervision_f (the flattened version of chambervision)
+    # and fly_ids provides the index into a flattened version of a batch_sz X T X num_flies tensor.
+    # id_to_prev_filled_id and id_to_next_filled_id are vectors going from a flattened index 
+    # to the corresponding flattened index of the previous/next filled (valid) element.
+    # These are used to find prev_id, next_id, which are vectors of length equal to the number
+    # of unfilled (invalid) elements and index into the flattened ids of the previous/next valid
+    # element.  prev_valid and next_valid are vectors marking whether or not these prev/next filled
+    # bins occur within the same fly.  If they do, we set unfilled entries of chambervision by
+    # linearly interpolate between the previous and next filled elements.  Otherwise,
+    # we set unfilled elements to the nearest filled element.
+    num_elements_all = np.prod(chambervision.shape)
+    num_elements_flies = np.prod(chambervision.shape[:3])
+    torch.cuda.synchronize()
+    valid = chambervision != np.inf   # batch_sz X T X num_flies X num_bins_chamber
+    invalid = chambervision == np.inf # batch_sz X T X num_flies X num_bins_chamber
+    ids = torch.arange(num_elements_all, device=device).reshape(chambervision.shape)
+    fly_ids = torch.arange(num_elements_flies, device=device) \
                    .reshape(chambervision.shape[:3]).unsqueeze(3).repeat([1, 1, 1, num_bins_chamber])
     chambervision_f = chambervision.flatten()
     chambervision_f, fly_ids_f, valid_f = chambervision.flatten(), fly_ids.flatten(), valid.flatten()
+    torch.cuda.synchronize()
     filled_ids = ids[valid]
+    torch.cuda.synchronize()
     unfilled_ids = ids[invalid]
-    id_to_prev_filled_ind = valid_f.cumsum(0) - 1
-    id_to_next_filled_ind = valid_f.sum() - valid_f.int().flip(0).cumsum(0).flip(0)
-    prev_id = filled_ids[id_to_prev_filled_ind[unfilled_ids]]
-    prev_valid = fly_ids_f[prev_id] == fly_ids_f[unfilled_ids]
-    next_id = filled_ids[id_to_next_filled_ind[unfilled_ids]]
-    next_valid = fly_ids_f[next_id] == fly_ids_f[unfilled_ids]
+    torch.cuda.synchronize()
+    id_to_prev_filled_id = valid_f.cumsum(0) - 1
+    id_to_next_filled_id = valid_f.sum() - valid_f.int().flip(0).cumsum(0).flip(0)
+    torch.cuda.synchronize()
+    prev_id = filled_ids[id_to_prev_filled_id[unfilled_ids]]
+    prev_id_c = prev_id.clamp(min=0)
+    torch.cuda.synchronize()
+    prev_valid = (prev_id == prev_id_c) & (fly_ids_f[prev_id_c] == fly_ids_f[unfilled_ids])
+    torch.cuda.synchronize()
+    next_id = filled_ids[id_to_next_filled_id[unfilled_ids]]
+    next_id_c = next_id.clamp(max=num_elements_all-1)
+    torch.cuda.synchronize()
+    next_valid = (next_id == next_id_c) & (fly_ids_f[next_id_c] == fly_ids_f[unfilled_ids])
+    torch.cuda.synchronize()
     chambervision_f[unfilled_ids] = \
             torch.where(prev_valid,
                 torch.where(next_valid,
@@ -330,6 +360,7 @@ def compute_fly_vision_features(positions, params, distF=0):
                             chambervision_f[next_id],
                             torch.full(unfilled_ids.shape, np.inf, device=device))
                 )
+    torch.cuda.synchronize()
     '''
     Test cases:
     In [148]: chambervision[0,0,0, 32] = np.inf
@@ -345,7 +376,10 @@ def compute_fly_vision_features(positions, params, distF=0):
         flyvision = 1 - torch.clamp(.05 * torch.clamp(flyvision - 1., min=0.)**0.6, max=1.)
         chambervision = torch.clamp(.5**(((chambervision - params['mindist']) * .4) * 1.3), max=1.)
 
-    return flyvision, chambervision
+  except Exception as err:
+    import pdb; pdb.set_trace()
+    print(traceback.format_exc())
+  return flyvision, chambervision
 
 
 def update_positions(positions_prev, basesize, f_motion, params): 
@@ -371,11 +405,13 @@ def update_positions(positions_prev, basesize, f_motion, params):
     xnext = xprev + dx
     ynext = yprev + dy
 
+    '''
     # force to stay within the arena
     dx_arena = xnext - params['arena_center_x']
     dy_arena = ynext - params['arena_center_y']
     r_arena = torch.sqrt(dx_arena**2. + dy_arena**2.)
     theta_arena = torch.atan2(dy_arena,dx_arena)
+    '''
 
     anext = (dmajax + 1.) * majax
     l_wing_ang_next = -awing1 - dawing1
@@ -398,7 +434,7 @@ def motion2pixels_and_frames(f_motion, params):
     return [moves[...,i] for i in range(moves.shape[-1])]
 
 
-def binscores2motion(binscores,params,noiseF=True):
+def binprobs2motion(binprobs, params, noiseF=True, method='multinomial'):
     """
     This is a ported version of Kristin/Daniel's binscores2motion() function, which
     randomly samples a motion for each fly based on predicted bin scores from an RNN.
@@ -407,20 +443,28 @@ def binscores2motion(binscores,params,noiseF=True):
     """
     device = params['binedges'].device
     n_bins = params['binedges'].shape[0]-1
-    f_motion = torch.zeros(binscores.shape[:-1], device=device)
+    f_motion = torch.zeros(binprobs.shape[:-1], device=device)
 
-    prob = binscores ** params['binprob_exp'] 
-    prob = prob / prob.sum(binscores.ndim - 1).unsqueeze(binscores.ndim - 1)
-    idx = torch.multinomial(prob.view(-1, n_bins), 1).view(binscores.shape[:-1])
-
-    for v in range(params['n_motions']):
-        binstart = params['binedges'][idx[..., v], v]
-        binend = params['binedges'][idx[..., v] + 1, v]
-        binwidth = binend - binstart
-        if noiseF:
-            f_motion[..., v] = binstart + torch.rand(1, device=device) * (binend - binstart)
-        else:
-            f_motion[..., v] = binstart
+    prob = binprobs / binprobs.sum(binprobs.ndim - 1).unsqueeze(binprobs.ndim - 1)
+    
+    if method == 'multinomial':
+        # Randomly sample a bin based on its probability
+        idx = torch.multinomial(prob.view(-1, n_bins), 1).view(binprobs.shape[:-1])
+        
+        for v in range(params['n_motions']):
+            binstart = params['binedges'][idx[..., v], v]
+            binend = params['binedges'][idx[..., v] + 1, v]
+            binwidth = binend - binstart
+            if noiseF:
+                f_motion[..., v] = binstart + torch.rand(1, device=device) * (binend - binstart)
+            else:
+                f_motion[..., v] = binstart
+    elif method == 'softmax':
+        # differentiable method that takes the bin centers weighted by predicted probabilities
+        bincenters = ((params['binedges'][1:] + params['binedges'][:-1]) / 2.).type(prob.dtype).transpose(0, 1)
+        f_motion = (prob * bincenters).sum(prob.ndim - 1)
+    else:
+        raise Exception(ValueError, 'Unknown prediction method %s in binprobs2motion()' % method)
 
     return f_motion
 
@@ -439,6 +483,9 @@ def load_rnn(args, load_path):
                                 loc: storage)[0])
 
     return model
+
+def save(model, save_path):
+    torch.save([model.state_dict()], save_path+'.pkl')
 
 def load_fly_models(args):
     """
@@ -523,3 +570,25 @@ def load_eyrun_data(matfile):
     basesize['lwing2'] = np.nanmedian(trx['r_wing_len'],axis=0)
 
     return (trx,motiondata,params,basesize)
+
+def load_video_and_setup(video_dir, args):
+    device = torch.device("cuda" if args.use_cuda else "cpu")
+    matfile = '%s/%s/%s' % (args.dataset_path, video_dir, args.trx_name)
+    video = load_video(matfile, device=device)
+    trx,motiondata,params,basesize = video
+
+    nans = torch.isnan(motiondata)
+    if nans.any():
+        print("Found nans in motiondata, replacing with 0s")
+        motiondata[nans] = 0.
+    if 'perc' in args.bin_type:
+        binedges = np.load('./bins/percentile_%dbins.npy' % args.num_motion_bins)
+        params['binedges'] = torch.tensor(binedges).to(device)
+    else:
+        binedges = params['binedges']
+
+    params['mtype'] = args.model_type
+        
+    args.y_dim = (binedges.shape[0] - 1) * params['n_motions']
+    args.x_dim = feature_dims(args, params)
+    return video

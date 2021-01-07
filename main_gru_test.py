@@ -316,6 +316,7 @@ def parse_args():
     parser.add_argument('--use_cuda', type=bool, default=True)
     parser.add_argument('--file_dir', type=str, \
             default='./fout/', help='Directory name to save the model')
+    parser.add_argument('--mypath', type=str, default="./bins/")
 
     return check_args(parser.parse_args())
 
@@ -378,7 +379,7 @@ scheduler = lr_scheduler_init(optimizer, args)
 ## Load Videos
 video_data_list = load_videos(onehotF=args.onehot, vtype=args.vtype,\
                             dtype=args.dtype, bin_type=args.bin_type,\
-                              num_bin=args.num_bin, include_test=False)
+                              num_bin=args.num_bin, include_test=False, mypath=args.mypath)
 
 
 Ntr = 5000  # Number of (sampled) training examples per "epoch"
