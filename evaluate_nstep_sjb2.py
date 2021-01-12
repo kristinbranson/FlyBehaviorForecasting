@@ -53,6 +53,7 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
                 if 'model' in m:
                     m['hidden'] = m['model'].initHidden(batch_sz * num_samples * len(m['inds']),
                                                         use_cuda=args.use_cuda)
+                    m['model'].eval()
         
         # Extract real fly positions from the dataset
         past_positions, past_feat_motion = \

@@ -4,6 +4,7 @@ import os
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import gc
 
 def get_real_positions_batch(t, trx, T, t_stride, batch_sz, basesize=None, motiondata=None):
     '''
@@ -66,7 +67,7 @@ def add_velocities(positions, fields, prev=None):
         positions['vel' + k] = torch.cat([first, positions[k][:, 1:, :] - positions[k][:, :-1, :]], 1)
 
 def compute_position_errors(simulated_positions, true_positions, error_types, num_samples=1,
-                            soft=False):
+                            soft=False, eps=1e-8):
     """
     Helper function to compute different loss functions (L1, L2, and angle difference),
     possibly over multiple fields (e.g. x, y)
@@ -108,7 +109,7 @@ def compute_position_errors(simulated_positions, true_positions, error_types, nu
             errors[name] = errors[name] + e if name in errors else e
 
         if err == 'L2':
-            errors[name] = torch.sqrt(errors[name])
+            errors[name] = torch.sqrt(errors[name] + eps)
         elif err == 'L1' or err == 'ang' and len(fields) > 1:
             errors[name] /= len(fields)
 
@@ -198,3 +199,81 @@ def replace_in_file(filein, fileout, replace):
 def nan_safe(v):
     v[np.isnan(v)] = 0
     return v
+
+def geometrical_steps(f, max_v, start=0):
+    ret = [start]
+    curr = 1
+    while curr <= max_v:
+        i = start + int(curr)
+        if i != ret[-1]:
+            ret.append(i)
+        curr *= f
+    if ret[-1] != start + max_v:
+        ret.append(start + max_v)
+    return ret
+
+def get_modelname(args, prefix="flynet"):
+    return prefix + "_" + args.rnn_type \
+        + str(args.num_iters)+'steps_'\
+        + str(args.batch_sz)+'batch_sz_'\
+        + str(args.learning_rate)+'lr_'\
+        + str(args.t_past)+'tpast_'\
+        + str(args.t_sim)+'tsim_'\
+        + str(args.num_samples)+'samp_'\
+        + str(args.num_motion_bins)+'bins_'\
+        + str(args.h_dim)+'hids_'\
+        + str(args.gamma)+'gamma_'\
+        + str(args.num_rand_features)+'gamma_'\
+        + '_btype:'+str(args.bin_type)\
+        + '_mtype:'+str(args.model_type)\
+        + '_rtype:'+str(args.rnn_type)\
+        + '_stype:'+str(args.lr_sched_type)\
+        + '_mot:'+str(args.motion_method)
+
+def iter_graph(root, callback, args):
+    queue = [root]
+    seen = set()
+    while queue:
+        fn = queue.pop()
+        if fn in seen or fn is None:
+            continue
+        seen.add(fn)
+        if  fn.next_functions is not None:
+            for next_fn, _ in fn.next_functions:
+                if next_fn is not None and not hasattr(next_fn, 'variable'):
+                    queue.append(next_fn)
+        callback(fn, args)
+
+stack = None
+def register_hooks(var):
+    fn_dict = {}
+    global stack
+    stack = []
+    def hook_cb(fn, args):
+        stack = args
+        stack += [fn]
+        def register_grad(grad_input, grad_output):
+            if not all(t is None or (torch.all(~torch.isnan(t)) and torch.all(~torch.isinf(t))) for t in grad_input):
+                import pdb; pdb.set_trace()
+            if not all(t is None or (torch.all(~torch.isnan(t)) and torch.all(~torch.isinf(t))) for t in grad_output):
+                import pdb; pdb.set_trace()
+            assert all(t is None or torch.all(~torch.isnan(t)) for t in grad_input), "{fn} grad_input={grad_input} grad_output={grad_output}"
+            assert all(t is None or torch.all(~torch.isnan(t)) for t in grad_output), "{fn} grad_input={grad_input} grad_output={grad_output}"
+            
+            fn_dict[fn] = grad_input
+        fn.register_hook(register_grad)
+    iter_graph(var.grad_fn, hook_cb, stack)
+    return stack
+
+def get_memory_usage():
+    tensors = []
+    total_sz = 0
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                sz = obj.element_size() * obj.nelement()
+                tensors.append((sz, obj))
+                total_sz += sz / 1000000000.0
+        except:
+            pass
+    return total_sz, [t[1] for t in sorted(tensors, key=lambda x: x[0])]

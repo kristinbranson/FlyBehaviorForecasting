@@ -194,7 +194,7 @@ def compute_fly_vision_features(positions, params, distF=0):
     """
     device = positions.values()[0].device
 
-    positions_np = {k: v.detach().cpu().numpy() for k,v in positions.items()}  # temporary debugging
+    #positions_np = {k: v.detach().cpu().numpy() for k,v in positions.items()}  # temporary debugging
 
     # Fly center positions (x,y), ellipse angle and minor/major axes (theta, a, b)
     x = positions['x']  # batch_sz X T X num_flies
@@ -296,7 +296,7 @@ def compute_fly_vision_features(positions, params, distF=0):
         raise Exception(ValueError, 'angle to arena wall is nan')
     angle_bin = torch.floor(angle / step_chamber).long()
     angle_bin = angle_bin.clamp(max = num_bins_chamber - 1)  # batch_sz X T X num_flies
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
 
     # batch_sz X T X num_flies, num_bins_chamber
     # TODO: use reduce='min' or reduce='mean' when it's supported by pytorch.  Currently, when
@@ -304,6 +304,8 @@ def compute_fly_vision_features(positions, params, distF=0):
     # will choose a particular one which probably won't match
     chambervision = torch.full([batch_sz, T, num_flies, num_bins_chamber], np.inf, device=device)
     chambervision.scatter_(3, angle_bin, dist) # , reduce='min')
+
+    #chambervision_np = chambervision.detach().cpu().numpy()
 
     
     # interpolate / extrapolate gaps in the chambervision
@@ -322,7 +324,7 @@ def compute_fly_vision_features(positions, params, distF=0):
     # we set unfilled elements to the nearest filled element.
     num_elements_all = np.prod(chambervision.shape)
     num_elements_flies = np.prod(chambervision.shape[:3])
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     valid = chambervision != np.inf   # batch_sz X T X num_flies X num_bins_chamber
     invalid = chambervision == np.inf # batch_sz X T X num_flies X num_bins_chamber
     ids = torch.arange(num_elements_all, device=device).reshape(chambervision.shape)
@@ -330,24 +332,26 @@ def compute_fly_vision_features(positions, params, distF=0):
                    .reshape(chambervision.shape[:3]).unsqueeze(3).repeat([1, 1, 1, num_bins_chamber])
     chambervision_f = chambervision.flatten()
     chambervision_f, fly_ids_f, valid_f = chambervision.flatten(), fly_ids.flatten(), valid.flatten()
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     filled_ids = ids[valid]
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     unfilled_ids = ids[invalid]
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     id_to_prev_filled_id = valid_f.cumsum(0) - 1
     id_to_next_filled_id = valid_f.sum() - valid_f.int().flip(0).cumsum(0).flip(0)
-    torch.cuda.synchronize()
-    prev_id = filled_ids[id_to_prev_filled_id[unfilled_ids]]
-    prev_id_c = prev_id.clamp(min=0)
-    torch.cuda.synchronize()
-    prev_valid = (prev_id == prev_id_c) & (fly_ids_f[prev_id_c] == fly_ids_f[unfilled_ids])
-    torch.cuda.synchronize()
-    next_id = filled_ids[id_to_next_filled_id[unfilled_ids]]
-    next_id_c = next_id.clamp(max=num_elements_all-1)
-    torch.cuda.synchronize()
-    next_valid = (next_id == next_id_c) & (fly_ids_f[next_id_c] == fly_ids_f[unfilled_ids])
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
+    prev = id_to_prev_filled_id[unfilled_ids]
+    prev_c = id_to_prev_filled_id[unfilled_ids].clamp(min=0)
+    prev_id = filled_ids[prev_c]
+    #torch.cuda.synchronize()
+    prev_valid = (prev == prev_c) & (fly_ids_f[prev_id] == fly_ids_f[unfilled_ids])
+    #torch.cuda.synchronize()
+    next = id_to_next_filled_id[unfilled_ids]
+    next_c = next.clamp(max=filled_ids.shape[0]-1)
+    next_id = filled_ids[next_c]
+    #torch.cuda.synchronize()
+    next_valid = (next == next_c) & (fly_ids_f[next_id] == fly_ids_f[unfilled_ids])
+    #torch.cuda.synchronize()
     chambervision_f[unfilled_ids] = \
             torch.where(prev_valid,
                 torch.where(next_valid,
@@ -360,7 +364,7 @@ def compute_fly_vision_features(positions, params, distF=0):
                             chambervision_f[next_id],
                             torch.full(unfilled_ids.shape, np.inf, device=device))
                 )
-    torch.cuda.synchronize()
+    #torch.cuda.synchronize()
     '''
     Test cases:
     In [148]: chambervision[0,0,0, 32] = np.inf
