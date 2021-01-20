@@ -4,9 +4,99 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 #use_cuda=1
 
+class ResNetFFBlock(nn.Module):
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        norm_layer: Optional[Callable[..., nn.Module]] = None
+    ) -> None:
+        super(ResNetFFBlock, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm1d
+        self.linear1 = nn.Linear(inplanes, planes)
+        self.bn1 = norm_layer(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.linear2 = nn.Linear(planes, planes)
+        self.bn2 = norm_layer(planes)
 
+    def forward(self, x: Tensor) -> Tensor:
+        out = self.linear1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
 
+        out = self.linear2(out)
+        out = self.bn2(out)
 
+        out += x
+        out = self.relu(out)
+
+        return out
+
+class ResNetFF(nn.Module):
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        outputs: int,
+        num_blocks: int,
+        norm_layer: Optional[Callable[..., nn.Module]] = None
+    ) -> None:
+        super(ResNetFF, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm1d
+        self.blocks = ResNetFFBlock(inplanes, planes, norm_layer)
+        self.linear = nn.Linear(planes, outputs)
+                 
+    def forward(self, x: Tensor) -> Tensor:
+        out = x
+
+        for block in self.blocks:
+            out = block(x)
+        out = self.linear(out)
+
+        return out
+    
+
+class FlyNetworkGRU2(nn.Module):
+    def __init__(self, args):
+        super(FlyNetworkGRU2, self).__init__()
+
+        self.hidden_size = args.h_dim
+        self.gru = nn.GRU(args.x_dim, args.h_dim, args.num_layers)
+        self.head = ResNetFF(args.x_dim, args.r_dim, args.y_dim, args.num_blocks)
+        self.initWeights()
+
+    def forward(self, X, hidden):
+        T, B, D = X.size()
+        n, hidden = self.gru1(X, hidden)
+        n = n.view(T, B, -1)
+        output = torch.stack([self.head(n[t, ...]) for t in range(T)], 0)
+
+        return output, hidden
+
+    def initHidden(self, batch_sz, T=1, device="cpu"):
+        return Variable(torch.zeros(T, batch_sz, self.hidden_size, device=device))
+
+    def initWeights(self):
+        if args.init_weights == 'kaiming':
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                elif isinstance(m, ResNetFFBlock):
+                    nn.init.constant_(m.bn1, weight, 1)
+                    nn.init.constant_(m.bn1, bias, 0)
+                    nn.init.constant_(m.bn2, weight, 0)
+                    nn.init.constant_(m.bn2, bias, 0)
+                elif isinstance(m, nn.GRU):
+                    for name, param in m.named_parameters():
+                        if 'bias' in name:
+                            nn.init.constant_(param, 0.0)
+                        elif 'weight_ih' in name:
+                            nn.init.kaiming_normal_(param, mode='fan_out', nonlinearity='relu')
+                        elif 'weight_hh' in name:
+                            nn.init.orthogonal_(param)
+    
 class FlyNetworkGRU(nn.Module):
 
     def __init__(self, args):
@@ -32,16 +122,13 @@ class FlyNetworkGRU(nn.Module):
         return output, [hidden1, hidden2, hidden3]
 
 
-    def initHidden(self, batch_sz, T=1, use_cuda=1):
+    def initHidden(self, batch_sz, T=1, device="cpu"):
 
-        result1 = Variable(torch.zeros(T, batch_sz, self.hidden_size))
-        result2 = Variable(torch.zeros(T, batch_sz, self.hidden_size))
-        result3 = Variable(torch.zeros(T, batch_sz, self.hidden_size))
+        result1 = Variable(torch.zeros(T, batch_sz, self.hidden_size, device=device))
+        result2 = Variable(torch.zeros(T, batch_sz, self.hidden_size, device=device))
+        result3 = Variable(torch.zeros(T, batch_sz, self.hidden_size, device=device))
 
-        if use_cuda:
-            return [result1.cuda(), result2.cuda(), result3.cuda()]
-        else:
-            return [result1, result2, result3]
+        return [result1, result2, result3]
 
 
 

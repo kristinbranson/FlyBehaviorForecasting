@@ -6,11 +6,11 @@ import os
 import json
 import shutil
 
-from utils import get_real_positions_batch, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe
-from rnn_utils import run_rnns, run_constant_velocity_baseline, run_stay_still_baseline, compute_cross_entropy_errors
+from utils import get_real_positions_batch, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe, parse_args
+from rnn_utils import run_rnns, run_constant_velocity_baseline, run_stay_still_baseline
 from fly_utils import load_fly_models, compute_model_inds, load_video, feature_dims, ERROR_TYPES_FLIES, \
     VELOCITY_FIELDS_FLIES, FLY_DATASET_PATH, video16_path, TEST, MALE, FEMALE, load_video_and_setup
-
+from train import compute_cross_entropy_errors
                                     
 def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
                                   run_prediction_model=run_rnns,
@@ -27,14 +27,15 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
     num_samples = args.num_samples  # number of random trajectories per fly
     num_motion_feat = params['n_motions']
     num_motion_bins = params['binedges'].shape[0] - 1
+    device = trx.values()[0].device
     
     t_start = args.t_start if args.t_start is not None else 0
     t_end = args.t_end if args.t_end is not None else trx['x'].shape[0]
 
     for m in models:
         if 'model' in m:
-            m['hidden'] = m['model'].initHidden(batch_sz * num_samples * len(m['inds']),
-                                                use_cuda=args.use_cuda)
+            m['hidden'] = m['model'].initHidden(batch_sz * len(m['inds']),
+                                                device=device)
     
     print('Simulation Start %d %d %d...\n' % (t_start, t_end, T_sim))
 
@@ -51,8 +52,8 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
         if batch_sz != args.batch_sz:
             for m in models:
                 if 'model' in m:
-                    m['hidden'] = m['model'].initHidden(batch_sz * num_samples * len(m['inds']),
-                                                        use_cuda=args.use_cuda)
+                    m['hidden'] = m['model'].initHidden(batch_sz * len(m['inds']),
+                                                        device=device)
                     m['model'].eval()
         
         # Extract real fly positions from the dataset
@@ -73,16 +74,16 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
                                            num_rand_features=args.num_rand_features)
 
         # Store simulated fly positions
-        num_flies, device = trx.values()[0].shape[1], trx.values()[0].device
+        num_flies = trx.values()[0].shape[1]
         simulated_positions, prev = {}, {}
-        for k in results[0]['positions'].values()[0].keys():
+        for k in results[0][0]['positions'].keys():
             simulated_positions[k] = torch.zeros([batch_sz*num_samples, T_sim, num_flies],
                                                  device=device)
             prev[k] = torch.zeros([batch_sz*num_samples, 1, num_flies],  device=device)
             for mi, m in enumerate(models):
-                prev[k][:, :, m['inds']] = results[T_past - 1]['positions'][mi][k]
+                prev[k][:, :, m['inds']] = torch.stack([results[mi][0]['positions'][k][:, -1, :]]*num_samples, 1).view([-1, 1, len(m['inds'])])
                 for ti in range(T_sim):
-                    simulated_positions[k][:, ti:ti+1, m['inds']] = results[T_past + ti]['positions'][mi][k]
+                    simulated_positions[k][:, ti:ti+1, m['inds']] = results[mi][ti+1]['positions'][k]
         add_velocities(simulated_positions, velocity_fields, prev=prev)
         all_simulated_positions = add_positions(all_simulated_positions, simulated_positions)
         if args.save_vis:
@@ -94,20 +95,13 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
                                          num_samples=num_samples)
 
         # Compute log-likelihoods
-        past_feat_motion_t = past_feat_motion.permute(0, 2, 3, 1)
         ce_errors = []
-        binscores = torch.zeros([batch_sz*num_samples, num_flies,
+        binscores = torch.zeros([T_past*batch_sz, num_flies,
                                  num_motion_feat, num_motion_bins],  device=device)
-        for ti in range(T_past):
-            for mi, m in enumerate(models):
-                binscores_m = results[ti]['binscores'][mi].view([batch_sz*num_samples,
-                                                       len(m['inds']), num_motion_feat,
-                                                       num_motion_bins])
-                binscores[:, m['inds'], :, :] = binscores_m
-            ce = compute_cross_entropy_errors(binscores, past_feat_motion_t[:, ti, :, :],
-                                              params)
-            ce_errors.append(ce.mean(3))
-        errors['cross_entropy'] = torch.stack(ce_errors, 2)
+        for mi, m in enumerate(models):
+            binscores[:, m['inds'], :, :] = results[mi][0]['binscores'].contiguous().view(-1, len(m['inds']), num_motion_feat, num_motion_bins)
+        ce_errors = compute_cross_entropy_errors(binscores.view(-1, num_motion_feat, num_motion_bins), past_feat_motion, params)
+        errors['cross_entropy'] = ce_errors.mean(4).permute(1, 2, 0, 3)
 
         progress_str = "t=%d, Mean Errors: " % t
         if all_errors is not None:
@@ -222,44 +216,21 @@ def compute_nstep_errors_on_dataset(video_list, args,
             
 
 """parsing and configuration"""
-def parse_args():
-    desc = "Pytorch implementation of FlyNetwork collections"
-    parser = argparse.ArgumentParser(description=desc)
-    
+def evaluate_args(parser):
+    parser.add_argument('--dataset_path', type=str, default=FLY_DATASET_PATH,
+                        help='Location of real videos of observed trajectories')
     parser.add_argument('--t_stride', type=int, default=30, help='Compute nstep error over trajectories sampled every t_stride frames for each video')
-    parser.add_argument('--t_past', type=int, default=30, help='Use t_past frames from the past to initial the RNN state before simulating future frames')
-    parser.add_argument('--t_sim', type=int, default=30, help='Number of frames to simulate for each trajectory')
-    parser.add_argument('--num_samples', type=int, default=10, help='Number of random trajectory samples to simulate for each trajectory')
-    parser.add_argument('--dataset_path', type=str, default=FLY_DATASET_PATH, help='Location of real videos of observed trajectories')
-    parser.add_argument('--basepath', type=str, default='./', help='Location to store results')
-    parser.add_argument('--trx_name', type=str, default='eyrun_simulate_data.mat', help='Name of each video file containing tracked trajectory positions')
-    parser.add_argument('--save_path_male', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000')
-    parser.add_argument('--save_path_female', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000')
-    parser.add_argument('--use_cuda', type=int, default=1, help='Whether or not to run on the GPU')
-    parser.add_argument('--dataset_type', type=str, default='gmr', help='Name of the dataset')
-    parser.add_argument('--bin_type', type=str, default='perc', help='Method used to bin RNN predicted motion outputs')
-    parser.add_argument('--model_type', type=str, default='rnn50', help='Model architecture')
-    parser.add_argument('--h_dim', type=int, default=100, help='RNN hidden state dimensions')
-    parser.add_argument('--num_motion_bins', type=int, default=101, help='number of motion bins for RNN output')
     parser.add_argument('--t_start', type=int, default=20, help='First frame to sample trajectories from')
     parser.add_argument('--t_end', type=int, default=None, help='Last frame to sample trajectories from')
-    parser.add_argument('--batch_sz', type=int, default=64, help='Number of trajectories in each batch')
-    parser.add_argument('--num_rand_features', type=int, default=20,
-                        help='Add random vector of this dimensionality to state features as an input to the RNN, to represent stochasticity of behaviors')
-    parser.add_argument('--motion_method', type=str, default='softmax',
-                        help='Method used to predict motion from bin probabilities (use multinomial or softmax)')
-    parser.add_argument('--loss_type', type=str, default='nstep',
-                        help='Type of training loss function')
-
+    
     parser.add_argument('--exp_names', type=str, default=None)
     parser.add_argument('--labels', type=str, default=None)
     parser.add_argument('--lazy', type=bool, default=True)
     parser.add_argument('--save_vis', type=int, default=0)
-    return parser.parse_args()
 
 
 if __name__ == '__main__':
-    args = parse_args()
+    args = parse_args(evaluate_args)
     video_list = video16_path[args.dataset_type][TEST]
     if args.exp_names is None:
         compute_nstep_errors_on_dataset(video_list, args)

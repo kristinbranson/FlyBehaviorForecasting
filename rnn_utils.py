@@ -11,78 +11,109 @@ def run_rnns(models, T, num_samples, start_positions, start_feat_motion, params,
     if num_real_frames is None:
         num_real_frames = start_positions.values()[0].shape[1]
     batch_sz = start_positions.values()[0].shape[0]
-    hiddens = [m['hidden'] for m in models]
+    num_motion_feat = params['n_motions']
+    positions, hiddens, motions, binscores, basesizes = [], [], [], [], []
     results = []
+    rand_features = None
+    device = start_feat_motion.device
+
+    # Run the RNN model on the initial ground truth observed frames, to accumulate
+    # the initial RNN hidden state
+    for i, model in enumerate(models):
+        inds = model['inds']
+        num_flies = len(inds)
+        basesizes.append({k: v[inds] for k,v in basesize.items()})
+            
+        position = {k: v[:, :num_real_frames, inds] for k,v in start_positions.items()}
+        motion = start_feat_motion[:, :num_real_frames, inds, :]
+        assert(motion.shape[-1] == num_motion_feat)
+
+        if num_rand_features > 0:
+            rand_features = torch.zeros(list(motion.shape[:-1]) + [num_rand_features],
+                                        device=device)
+        feats_m = compute_features(position, motion, params, train=train,
+                                   rand_features=rand_features)
+        
+        # Run num_real_frames steps of the RNN model
+        binscore, hidden, motion_new = forward_with_motion(model['model'], feats_m,
+                                                           model['hidden'], batch_sz,
+                                                           1, params, motion_method)
+        
+        position_new = update_positions(position, basesizes[i], motion_new, params) 
+        debug_check(debug, motion_new, hidden, position_new)
+        
+        positions.append(position)
+        binscores.append(binscore)
+        hiddens.append(hidden)
+        motions.append(motion)
+        results.append([{'hidden': hiddens[i], 'positions': position_new,
+                         'binscores': binscores[i]}])
+
+    # Store the last observed real frame
+    t = num_real_frames - 1
+    for i, model in enumerate(models):
+        inds = model['inds']
+        num_flies = len(inds)
+        positions[i] = {k: torch.stack([v[:, t:t+1, inds]] * num_samples, 1).\
+                        view([-1, 1, num_flies]) for k,v in start_positions.items()}
+        motions[i] = torch.stack([start_feat_motion[:, t:t+1, inds, :]] * num_samples, 1).\
+                     view([-1, 1, num_flies, start_feat_motion.shape[3]])
+        hiddens[i] = [torch.stack([h] * num_samples, 2).view([1, -1, h.shape[2]]) for h in hiddens[i]]
+
+    # Sequentially run the RNN one frame at a time, generating vision features using the
+    # simulated position from the previous timestep
+    rand_features = [None] * len(models)
+    for t in range(num_real_frames, T):
+        for i, model in enumerate(models):
+            # Compute state features using the current position
+            assert(motions[i].shape[-1] == num_motion_feat)
+            if num_rand_features > 0 and t == num_real_frames:
+                rand_features[i] = torch.rand(list(motions[i].shape[:-1]) + [num_rand_features],
+                                            device=device)
+            feats_m = compute_features(positions[i], motions[i], params, train=train,
+                                       rand_features=rand_features[i])
+
+            # Run one step of the RNN model
+            binscores[i], hiddens[i], motions[i] = forward_with_motion(model['model'], feats_m,
+                                                                       hiddens[i], batch_sz,
+                                                                       num_samples, params,
+                                                                       motion_method)
+            positions[i] = update_positions(positions[i], basesizes[i], motions[i], params)
+
+            debug_check(debug, motions[i], hiddens[i], positions[i])
+            results[i].append({'hidden': hiddens[i], 'positions': positions[i],
+                               'binscores': binscores[i]})
+            
+    return results
+
+def debug_check(debug, motion, hidden, positions_new_m):
+    if debug > 0:
+        if torch.isnan(motion).sum():
+            import pdb; pdb.set_trace()
+        for h in hidden:
+            if torch.isnan(h).sum():
+                import pdb; pdb.set_trace()
+        for k, v in positions_new_m.items():
+            if torch.isnan(v).sum():
+                import pdb; pdb.set_trace()
+
+def forward_with_motion(model, feats_m, hidden, batch_sz, num_samples, params, motion_method):
+    T, num_flies = feats_m.shape[0], feats_m.shape[1] // (batch_sz * num_samples)
     num_motion_feat = params['n_motions']
     num_motion_bins = params['binedges'].shape[0] - 1
 
-    positions_new, feat_motion_new, binscores_all = {}, {}, {}
-    for t in range(T):
-        hiddens_new = []
-        for i, (model, hidden) in enumerate(zip(models, hiddens)):
-            inds = model['inds']
-            num_flies = len(inds)
-            if t < num_real_frames:
-                # Extract fly positions and motion from real trajectories
-                positions_m = {k: torch.stack([v[:, t:t+1, inds]] * num_samples, 1) \
-                             .view([-1, 1, num_flies]) for k,v in start_positions.items()}
-                feat_motion_m = torch.stack([start_feat_motion[:, t:t+1, inds, :]] * num_samples, 1). \
-                              view([-1, 1, num_flies, start_feat_motion.shape[3]])
-            else:
-                # Update fly positions from the last simulated motion prediction
-                positions_m = positions_new[i]
-                feat_motion_m = feat_motion_new[i]
+    binscores, hidden = model.forward(feats_m, hidden)
+    binscores = binscores.contiguous().view([T * batch_sz * num_samples * num_flies,
+                                             num_motion_feat, num_motion_bins]) * \
+                                             params['binprob_exp']#*.3
+    binprobs = F.softmax(binscores, dim=2)
+    binprobs = binprobs.reshape([T, batch_sz*num_samples, num_flies, num_motion_feat,
+                                 num_motion_bins])
 
-            # Compute state features using the current position
-            assert(feat_motion_m.shape[-1] == num_motion_feat)
-            feats_m = compute_features(positions_m, feat_motion_m, params)
-            if num_rand_features > 0:
-                rand = torch.randn(list(feats_m.shape[:-1]) + [num_rand_features],
-                                   device=feats_m.device)
-                feats_m = torch.cat([feats_m, rand], 3)
-            num_feats = feats_m.shape[-1]        
-            feats_m = feats_m.transpose(0, 1)
-            feats_m = feats_m.contiguous().view(1, -1, num_feats)
-            if train:
-                feats_m = torch.autograd.Variable(feats_m, requires_grad=True)
+    # Sample a predicted motion from the motion bin probabilities
+    motion = binprobs2motion(binprobs, params, method=motion_method).transpose(0, 1)
 
-            # Run one step of the RNN model
-            binscores, hidden = model['model'].forward(feats_m, hidden)
-            binscores = binscores.contiguous().view([batch_sz * num_samples * num_flies,
-                                                     num_motion_feat, num_motion_bins]) * \
-                                                     params['binprob_exp']
-            binscores_all[i] = binscores
-            binprobs = F.softmax(binscores, dim=2)
-            binprobs = binprobs.reshape([1, batch_sz*num_samples, num_flies, num_motion_feat,
-                                         num_motion_bins])
-
-            # Sample a predicted motion from the motion bin probabilities
-            motion = binprobs2motion(binprobs, params, method=motion_method).transpose(0, 1)
-            feat_motion_new[i] = motion
-            
-            basesize_m = {k: v[inds] for k,v in basesize.items()}
-            positions_new_m = update_positions(positions_m, basesize_m, motion, params)
-            positions_new[i] = positions_new_m
-
-            if debug > 0:
-                if torch.isnan(motion).sum():
-                    import pdb; pdb.set_trace()
-                for h in hidden:
-                    if torch.isnan(h).sum():
-                        import pdb; pdb.set_trace()
-                for k, v in positions_new_m.items():
-                    if torch.isnan(v).sum():
-                        import pdb; pdb.set_trace()
-                
-            hiddens_new.append(hidden)
-                
-        results.append({'hidden': hiddens_new, 'positions': positions_new.copy(),
-                        'feat_motion': feat_motion_new.copy(), 'binscores': binscores_all.copy()
-        })
-        
-    return results
-
-
+    return binscores, hidden, motion
 
 
 # Baseline: update positions by setting positions to the last observed frame

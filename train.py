@@ -1,14 +1,13 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-import argparse
 import os
 import json
 import shutil
 from torch.utils.tensorboard import SummaryWriter
 
 from flyNetwork_RNN import FlyNetworkGRU, FlyNetworkSKIP6
-from utils import get_real_positions_batch, get_real_positions_batch_random, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe, get_modelname, geometrical_steps, register_hooks, get_memory_usage
+from utils import get_real_positions_batch, get_real_positions_batch_random, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe, get_modelname, geometrical_steps, register_hooks, get_memory_usage, parse_args
 from rnn_utils import run_rnns, run_constant_velocity_baseline, run_stay_still_baseline
 from fly_utils import *
 
@@ -17,9 +16,13 @@ def train(video_list, args,
           run_prediction_model=run_rnns,
           error_types=ERROR_TYPES_FLIES, log_errors_by_time=True):
     T_past = args.t_past # number of past frames used to load the RNN hidden state
-    T_sim = args.t_sim   # number of random frames to simulate a trajectory for
     batch_sz = args.batch_sz  # batch_sz X num_flies will be processed in each batch
-    num_samples = args.num_samples  # number of random trajectories per fly
+    if args.loss_type == 'cross_entropy':
+        num_samples = 1
+        T_sim = 0
+    else:
+        num_samples = args.num_samples  # number of random trajectories per fly
+        T_sim = args.t_sim   # number of random frames to simulate a trajectory for
     
     train = [load_video_and_setup(v, args) for v in video_list[TRAIN]]
     val = [load_video_and_setup(v, args) for v in video_list[VALID]]
@@ -31,7 +34,8 @@ def train(video_list, args,
     models = [{'name': 'male'}, {'name': 'female'}]
     for m in models:
         m['model'] = FlyNetworkSKIP6(args).cuda() if args.rnn_type =='hrnn' \
-                     else FlyNetworkGRU(args).cuda()
+                     else (FlyNetworkGRU2(args).cuda() if args.rnn_type =='rnnc'\
+                           else FlyNetworkGRU(args).cuda())
         m['optimizer'] = torch.optim.Adam(m['model'].parameters(), lr=args.learning_rate)
         m['scheduler'] = lr_scheduler_init(m['optimizer'], args)
 
@@ -55,8 +59,7 @@ def train(video_list, args,
         
         # Batch of random trajectories from video i
         real_positions, real_feat_motion = get_real_positions_batch_random(trx, 
-                    T_past + T_sim + 1, batch_sz, basesize=basesize, motiondata=motiondata)
-        real_feat_motion = real_feat_motion.permute(0, 2, 3, 1)
+                    T_past + T_sim, batch_sz, basesize=basesize, motiondata=motiondata)
 
         results = run_rnns(models, T_past + T_sim, num_samples, real_positions,
                            real_feat_motion, params, basesize, train=True,
@@ -64,7 +67,7 @@ def train(video_list, args,
                            num_rand_features=args.num_rand_features,
                            debug=args.debug)
         compute_loss(models, real_positions, real_feat_motion, results, error_types, args,
-                     params, train=True)
+                     params, loss_type=args.loss_type, train=True)
         
         progress_str = 't=%d' % t
         for mi, m in enumerate(models):
@@ -73,15 +76,17 @@ def train(video_list, args,
                 
             progress_str += ' train_loss_%s=%f' % (m['name'], m['loss'])
             writer.add_scalar('Loss/train_%s' % m['name'], m['loss'], t)
-            if 'errors' in results[0]:
-                for n in results[0]['errors'][mi]:
-                    E = torch.stack([results[ti]['errors'][mi][n] for ti in range(len(results))], 0)
+            if 'errors' in results[mi][0]:
+                for n in results[mi][0]['errors']:
+                    d = results[mi][0]['errors'][n].ndim
+                    dims = [0, 2] if d == 3 else ([0, 1, 3] if d == 4 else [0, 1, 3, 4])
+                    E = torch.cat([results[mi][ti]['errors'][n].mean(dims) for ti in range(len(results[mi]))], 0)
                     e = E.mean()
                     progress_str += ' %s=%f' % (n, e)
                     writer.add_scalar('Loss/train_%s_%s' % (m['name'], n), e, t)
                     if log_errors_by_time is not None:
                         for ti in log_errors_by_time:
-                            et = E[ti, ...].mean()
+                            et = E[ti]
                             writer.add_scalar('T_Loss/train_%s_%s_%d' % (m['name'], n, ti), et, t)
                             
             m['loss'].backward()
@@ -107,9 +112,14 @@ def train(video_list, args,
                 writer.add_scalar('Loss/val_%s' % m['name'], m['loss'], t)
                 val_str += ' val_loss_%s=%f' % (m['name'], m['loss'])
                 if 'errors' in m:
-                    for n, e in m['errors'].items():
+                    for n, E in m['errors'].items():
+                        e = E.mean()
                         val_str += ' %s=%f' % (n, e)
                         writer.add_scalar('Loss/val_%s_%s' % (m['name'], n), e, t)
+                        if log_errors_by_time is not None:
+                            for ti in log_errors_by_time:
+                                et = E[ti]
+                                writer.add_scalar('T_Loss_val/%s_%s_%d' % (m['name'], n, ti), et, t)
 
         progress.set_description((progress_str + val_str))
 
@@ -129,6 +139,8 @@ def compute_validation_loss(val, models, args, error_types):
         for m in models:
             m['model'].eval()
             m['loss'] = 0.
+            m['errors'] = {}
+            m['counts'] = {}
         for v in val:
             trx, motiondata, params, basesize = v
             old_batch_sz_v = None
@@ -138,9 +150,8 @@ def compute_validation_loss(val, models, args, error_types):
                     switch_video(v, models, batch_sz_v, num_samples)
                     old_batch_sz_v = batch_sz_v
                 val_positions, val_feat_motion = get_real_positions_batch(
-                    tv, trx, T_past + T_sim + 1, T_past, batch_sz_v, basesize=basesize,
+                    tv, trx, T_past + T_sim, T_past, batch_sz_v, basesize=basesize,
                     motiondata=motiondata)
-                val_feat_motion = val_feat_motion.permute(0, 2, 3, 1)
                 results = run_rnns(models, T_past + T_sim, num_samples, val_positions,
                          val_feat_motion, params, basesize, train=False,
                          num_real_frames=T_past, motion_method=args.motion_method,
@@ -148,71 +159,92 @@ def compute_validation_loss(val, models, args, error_types):
                          debug=args.debug
                 )
                 compute_loss(models, val_positions, val_feat_motion, results, error_types,
-                             args, params, train=False)
+                             args, params, loss_type='cross_entropy', train=False)
+                compute_loss(models, val_positions, val_feat_motion, results, error_types,
+                             args, params, loss_type='nstep', train=False)
+
+                for mi, m in enumerate(models):
+                    if 'errors' in results[mi][0]:
+                        for n in results[mi][0]['errors']:
+                            d = results[mi][0]['errors'][n].ndim
+                            dims = [0, 2] if d == 3 else ([0, 1, 3] if d == 4 else [0, 1, 3, 4])
+                            E = torch.cat([results[mi][ti]['errors'][n].mean(dims) \
+                                                         for ti in range(len(results[mi]))], 0)
+                            if n not in m['errors']:
+                                m['errors'][n] = E
+                                m['counts'][n] = torch.ones_like(E)
+                            else:
+                                m['errors'][n][:E.shape[0]] += E
+                                m['counts'][n][:E.shape[0]] += 1
                 del results
                 count += 1
         for m in models:
             m['loss'] /= count
+            for n in m['errors']:
+                m['errors'][n] /= m['counts'][n]
+            del m['counts']
 
 def compute_loss(models, real_positions, real_feat_motion, results, error_types, args,
-                 params, train=True):
+                 params, loss_type='nstep', train=True):
     errors_all = {}
     batch_sz = real_positions.values()[0].shape[0]
-    T = len(results)
     for mi, m in enumerate(models):
         inds = m['inds']
-        for t, result in enumerate(results):
-            if args.loss_type == 'cross_entropy':
+        t = 0
+        #T = np.sum([r['positions'].values()[0].shape[1]] for r in results[mi]) 
+        for result in results[mi]:
+            Tc = result['positions'].values()[0].shape[1]
+            if loss_type == 'cross_entropy':
                 # Multiclass cross entropy loss using the trainset motion bin from t to t+1
-                binscores = result['binscores'][mi]
-                errors = compute_cross_entropy_errors(binscores, real_feat_motion[:, t, inds, :],
-                                                      params)
-                errors_all[i] = errors
+                binscores = result['binscores']
+                errors = compute_cross_entropy_errors(binscores, real_feat_motion[:, t:t+Tc, inds, :], params)
                 loss = errors.mean()
-                model['loss'] = model['loss'] + loss
-            elif args.loss_type == 'nstep':
+                errors = {'cross_entropy': errors.permute(1, 2, 0, 3, 4) }
+                m['loss'] = m['loss'] + loss
+            elif loss_type == 'nstep':
                 # n-step k-sample error from "Evaluation metrics for behaviour modeling"
                 # where n=T-num_real_frames, k=num_samples.  Here our RNN samples k random
                 # trajectory samples n-steps into the future, and the loss is the minimum
                 # distance among the k samples to the true observed trajectory.  For
                 # training, we use a softmin instead of a min
-                positions_new_m = result['positions'][mi]
+                positions_new_m = result['positions']
                 num_samples = positions_new_m.values()[0].shape[0] // batch_sz
-                sim_positions = {k: v.view([batch_sz, num_samples, 1, len(inds)]) \
+                sim_positions = {k: v.view([batch_sz, num_samples, Tc, len(inds)]) \
                                  for k,v in positions_new_m.items()}
-                future_positions = {k: v.detach()[:, t+1, inds].view(batch_sz, 1, 1, len(inds)) \
+                future_positions = {k: v.detach()[:, t:t+Tc, inds].view(batch_sz, 1, Tc, len(inds)) \
                                     for k,v in real_positions.items()}
                 errors = compute_position_errors(sim_positions, future_positions, error_types,
                                                  num_samples=num_samples, soft=train)
                 for name in error_types:
                     err = errors[name + '_min']
-                    m['loss'] = m['loss'] + err.mean() / T
+                    m['loss'] = m['loss'] + err.mean() / len(results[mi])
             else:
                 assert(args.loss_type is None)
+            t += Tc
             if not 'errors' in result:
                 result['errors'] = {}
-            result['errors'][mi] = errors
+            result['errors'] = errors
     
 def compute_cross_entropy_errors(binscores, true_feat_motion, params):
-    batch_sz, num_flies, num_motion_feat = true_feat_motion.shape
-    num_samples = binscores.shape[0] // batch_sz
-    num_motion_bins = binscores.shape[3]
+    batch_sz, T, num_flies, num_motion_feat = true_feat_motion.shape
+    num_samples = binscores.shape[-3] // (T * batch_sz * num_flies)
+    num_motion_bins = binscores.shape[-1]
     
     cross_entropy = torch.nn.CrossEntropyLoss(reduction='none')
     target_bins = motion2bins(true_feat_motion, params)
-    target_bins = torch.cat([target_bins.unsqueeze(1)] * num_samples, 1)
-    sz = batch_sz * num_samples * num_flies * num_motion_feat
+    target_bins = torch.cat([target_bins.unsqueeze(2)] * num_samples, 2)
+    sz = batch_sz * T * num_samples * num_flies * num_motion_feat
     target_bins_f = target_bins.contiguous().view([sz])
     binscores_f = binscores.view([sz, num_motion_bins])
     error = cross_entropy(binscores_f, target_bins_f)
     return error.contiguous().view(target_bins.shape)
                     
-def motion2bins(f_motion,params):
+def motion2bins(f_motion, params):
     num_bins = params['binedges'].shape[0] - 1
-    motion = f_motion.unsqueeze(3)
-    edges = params['binedges'].transpose(0, 1)[None,None,:,:]
-    binidx = ((motion >= edges).sum(3) - 1).clamp(min=0, max=num_bins - 1)
-    return binidx
+    motion = f_motion.unsqueeze(4)
+    edges = params['binedges'].transpose(0, 1)[None, None, None, :, :]
+    binidx = ((motion >= edges).sum(4) - 1).clamp(min=0, max=num_bins - 1)
+    return binidx.permute(1, 0, 2, 3)
 
 
 def lr_scheduler_init(optimizer, args):
@@ -238,66 +270,19 @@ def lr_scheduler_init(optimizer, args):
         return None
     return scheduler
 
-def switch_video(v, models, batch_sz, num_samples):
+def switch_video(v, models, batch_sz, num_samples, T=1):
     trx, motiondata, params, basesize = v
     compute_model_inds(models, basesize)
     for m in models:
-        m['hidden'] = m['model'].initHidden(batch_sz * num_samples * len(m['inds']),
-                                            use_cuda=args.use_cuda)
+        m['hidden'] = m['model'].initHidden(batch_sz * len(m['inds']),
+                                            T=T, device=trx.values()[0].device)
 
-
-"""parsing and configuration"""
-def parse_args():
-    desc = "Pytorch implementation of FlyNetwork collections"
-    parser = argparse.ArgumentParser(description=desc)
-    
-    parser.add_argument('--t_past', type=int, default=30,
-                        help='Use t_past frames from the past to initial the RNN state before simulating future frames')
-    parser.add_argument('--t_sim', type=int, default=30,
-                        help='Number of frames to simulate for each trajectory')
-    parser.add_argument('--num_samples', type=int, default=10,
-                        help='Number of random trajectory samples to simulate for each trajectory')
+def train_args(parser):
     parser.add_argument('--dataset_path', type=str, default=FLY_DATASET_PATH,
                         help='Location of real videos of observed trajectories')
-    parser.add_argument('--basepath', type=str, default='./',
-                        help='Location to store results')
-    parser.add_argument('--trx_name', type=str, default='eyrun_simulate_data.mat',
-                        help='Name of each video file containing tracked trajectory positions')
-    parser.add_argument('--use_cuda', type=int, default=1,
-                        help='Whether or not to run on the GPU')
-    parser.add_argument('--dataset_type', type=str, default='gmr',
-                        help='Name of the dataset')
-    parser.add_argument('--bin_type', type=str, default='perc',
-                        help='Method used to bin RNN predicted motion outputs')
-    parser.add_argument('--model_type', type=str, default='rnn50', help='Model architecture')
-    parser.add_argument('--h_dim', type=int, default=100, help='RNN hidden state dimensions')
-    parser.add_argument('--num_motion_bins', type=int, default=101,
-                        help='number of motion bins for RNN output')
-    parser.add_argument('--batch_sz', type=int, default=96,
-                        help='Number of trajectories in each batch')
-    parser.add_argument('--loss_type', type=str, default='nstep',
-                        help='Type of training loss function')
-    parser.add_argument('--rnn_type', type=str, default='rnn', help='Type of RNN model')
-    parser.add_argument('--learning_rate', type=float, default=0.005)
-    parser.add_argument('--lr_sched_type', type=str, default='multstep',
-                        help='Learning rate decay type')
-    parser.add_argument('--gamma', type=float, default=0.3)
-    parser.add_argument('--num_iters', type=int, default=100000)
-    parser.add_argument('--debug', type=int, default=1)
-    parser.add_argument('--validation_freq', type=int, default=1000,
-                        help='Frequency of evaluation validation loss in terms of training iterations')
-    parser.add_argument('--save_freq', type=int, default=1000,
-                        help='Frequency of saving model in terms of training iterations')
-    parser.add_argument('--save_dir', type=str, default="./models")
-    parser.add_argument('--motion_method', type=str, default='softmax',
-                        help='Method used to predict motion from bin probabilities (use multinomial or softmax)')
-    parser.add_argument('--num_rand_features', type=int, default=20,
-                        help='Add random vector of this dimensionality to state features as an input to the RNN, to represent stochasticity of behaviors')
-    
-    return parser.parse_args()
 
 
 if __name__ == '__main__':
-    args = parse_args()
+    args = parse_args(train_args)
     video_list = video16_path[args.dataset_type]
     train(video_list, args)

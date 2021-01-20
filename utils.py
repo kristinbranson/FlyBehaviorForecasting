@@ -5,6 +5,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import gc
+import argparse
 
 def get_real_positions_batch(t, trx, T, t_stride, batch_sz, basesize=None, motiondata=None):
     '''
@@ -26,7 +27,7 @@ def get_real_positions_batch(t, trx, T, t_stride, batch_sz, basesize=None, motio
     if motiondata is None:
         return positions
     else:
-        motion_feats = torch.stack([motiondata[:, s : s + T, :] for s in range(t, t + t_stride * batch_sz, t_stride)])
+        motion_feats = torch.stack([motiondata[:, s : s + T, :] for s in range(t, t + t_stride * batch_sz, t_stride)]).permute(0, 2, 3, 1)
         return positions, motion_feats
 
 def get_real_positions_batch_random(trx, T, batch_sz, basesize=None, motiondata=None, t_pad=2):
@@ -51,7 +52,7 @@ def get_real_positions_batch_random(trx, T, batch_sz, basesize=None, motiondata=
     if motiondata is None:
         return positions
     else:
-        motion_feats = motiondata[:, Ts, :].transpose(0, 1)
+        motion_feats = motiondata[:, Ts, :].permute(1, 2, 3, 0)
         return positions, motion_feats
 
 def add_velocities(positions, fields, prev=None):
@@ -145,7 +146,7 @@ def update_datasetwide_position_errors(errors, new_errors):
         progress_str += " %s=%f" % (k, (errors['sum_errors'][k] / errors['counts'][k]).mean())
     return progress_str
 
-def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'purple', 'black'], lines=['-', '-', '-', '-', '-', '-']):
+def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'purple', 'black','cyan'], lines=['-', '-', '-', '-', '-', '-','-']):
     sum_errors, sum_sqr_errors, counts = {}, {}, {}
     x = np.arange(1,args.t_sim + 1)
     exp_names = args.exp_names.split(',')
@@ -201,6 +202,8 @@ def nan_safe(v):
     return v
 
 def geometrical_steps(f, max_v, start=0):
+    if max_v < 0:
+        return []
     ret = [start]
     curr = 1
     while curr <= max_v:
@@ -277,3 +280,75 @@ def get_memory_usage():
         except:
             pass
     return total_sz, [t[1] for t in sorted(tensors, key=lambda x: x[0])]
+
+
+"""parsing and configuration"""
+def parse_args(fn = None):
+    desc = "Pytorch implementation of FlyNetwork collections"
+    parser = argparse.ArgumentParser(description=desc)
+    
+    parser.add_argument('--t_past', type=int, default=30,
+                        help='Use t_past frames from the past to initial the RNN state before simulating future frames')
+    parser.add_argument('--t_sim', type=int, default=30,
+                        help='Number of frames to simulate for each trajectory')
+    parser.add_argument('--num_samples', type=int, default=10,
+                        help='Number of random trajectory samples to simulate for each trajectory')
+    parser.add_argument('--basepath', type=str, default='./',
+                        help='Location to store results')
+    parser.add_argument('--trx_name', type=str, default='eyrun_simulate_data.mat',
+                        help='Name of each video file containing tracked trajectory positions')
+    parser.add_argument('--use_cuda', type=int, default=1,
+                        help='Whether or not to run on the GPU')
+    parser.add_argument('--dataset_type', type=str, default='gmr',
+                        help='Name of the dataset')
+    parser.add_argument('--bin_type', type=str, default='perc',
+                        help='Method used to bin RNN predicted motion outputs')
+    parser.add_argument('--model_type', type=str, default='rnn50', help='Model architecture')
+    parser.add_argument('--h_dim', type=int, default=100, help='RNN hidden state dimensions')
+    parser.add_argument('--num_motion_bins', type=int, default=101,
+                        help='number of motion bins for RNN output')
+    parser.add_argument('--batch_sz', type=int, default=None,
+                        help='Number of trajectories in each batch')
+    parser.add_argument('--loss_type', type=str, default='nstep',
+                        help='Type of training loss function')
+    parser.add_argument('--rnn_type', type=str, default='rnn', help='Type of RNN model')
+    parser.add_argument('--learning_rate', type=float, default=None)
+    parser.add_argument('--lr_sched_type', type=str, default='multstep',
+                        help='Learning rate decay type')
+    parser.add_argument('--gamma', type=float, default=0.3)
+    parser.add_argument('--num_iters', type=int, default=None)
+    parser.add_argument('--debug', type=int, default=1)
+    parser.add_argument('--validation_freq', type=int, default=1000,
+                        help='Frequency of evaluation validation loss in terms of training iterations')
+    parser.add_argument('--save_freq', type=int, default=1000,
+                        help='Frequency of saving model in terms of training iterations')
+    parser.add_argument('--save_dir', type=str, default="./models")
+    parser.add_argument('--motion_method', type=str, default=None,
+                        help='Method used to predict motion from bin probabilities (use multinomial or softmax)')
+    parser.add_argument('--num_rand_features', type=int, default=None,
+                        help='Add random vector of this dimensionality to state features as an input to the RNN, to represent stochasticity of behaviors')
+    parser.add_argument('--save_path_male', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000')
+    parser.add_argument('--save_path_female', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000')
+    if fn is not None:
+        fn(parser)
+    
+    args = parser.parse_args()
+
+    if args.loss_type == 'nstep':
+        # Default to training using nstep loss over 10 samples and 30 timesteps
+        args.motion_method = 'softmax' if args.motion_method is None else args.motion_method
+        args.num_iters = 30000 if args.num_iters is None else args.num_iters
+        args.learning_rate = 0.005 if args.learning_rate is None else args.learning_rate
+        args.batch_sz = 128 if args.batch_sz is None else args.batch_sz
+    else:
+        # Train using behavioral cloning with cross entropy loss
+        assert(args.loss_type == 'cross_entropy')
+        args.motion_method = 'multinomial' if args.motion_method is None else args.motion_method
+        args.num_iters = 10000 if args.num_iters is None else args.num_iters
+        args.learning_rate = 0.001 if args.learning_rate is None else args.learning_rate
+        args.batch_sz = 256 if args.batch_sz is None else args.batch_sz
+        
+    if args.num_rand_features is None:
+        args.num_rand_features = 0 if args.motion_method == 'multinomial' else 20
+
+    return args

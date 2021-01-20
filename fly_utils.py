@@ -180,9 +180,17 @@ default_params['arena_radius'] = 476.3236
 def feature_dims(args, params):
     return params['n_oma'] * 2 + params['n_motions'] + args.num_rand_features
 
-def compute_features(positions, feat_motion, params):
-    return torch.cat(list(compute_fly_vision_features(positions, params)) + [feat_motion], 3)
-
+def compute_features(positions, feat_motion, params, rand_features=None, train=False):
+    T = feat_motion.shape[1]
+    A = list(compute_fly_vision_features(positions, params)) + [feat_motion]
+    if rand_features is not None:
+        A += [rand_features]
+    feats_m = torch.cat(A, 3)
+    feats_m = feats_m.transpose(0, 1)
+    feats_m = feats_m.contiguous().view(T, -1, feats_m.shape[-1])
+    if train:
+        feats_m = torch.autograd.Variable(feats_m, requires_grad=True)
+    return feats_m
 
 def compute_fly_vision_features(positions, params, distF=0):
   try:
@@ -206,6 +214,7 @@ def compute_fly_vision_features(positions, params, distF=0):
     batch_sz, T, num_flies = x.shape
     num_bins, num_bins_chamber = params['n_oma'], params['n_oma']
     chamber_xs, chamber_ys = params['J'].flatten(), params['I'].flatten()
+    #chamber_xs, chamber_ys = chamber_xs[::8], chamber_ys[::8]
     num_chamber_pts = chamber_xs.shape[0]
 
     if torch.isnan(x).any() or torch.isnan(y).any() or torch.isnan(theta).any() or torch.isnan(a).any() or torch.isnan(b).any():
