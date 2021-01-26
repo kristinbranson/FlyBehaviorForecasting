@@ -602,6 +602,6 @@ def load_video_and_setup(video_dir, args):
 
     params['mtype'] = args.model_type
         
-    args.y_dim = (binedges.shape[0] - 1) * params['n_motions']
+    args.y_dim = (1 if args.motion_method == 'direct' else binedges.shape[0] - 1) * params['n_motions']
     args.x_dim = feature_dims(args, params)
     return video

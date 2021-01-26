@@ -5,28 +5,23 @@ import torch.nn.functional as F
 #use_cuda=1
 
 class ResNetFFBlock(nn.Module):
-    def __init__(
-        self,
-        inplanes: int,
-        planes: int,
-        norm_layer: Optional[Callable[..., nn.Module]] = None
-    ) -> None:
+    def __init__(self, inplanes, planes, norm_layer=None):
         super(ResNetFFBlock, self).__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm1d
         self.linear1 = nn.Linear(inplanes, planes)
-        self.bn1 = norm_layer(planes)
+        self.bn1 = None if norm_layer is None else norm_layer(planes)
         self.relu = nn.ReLU(inplace=True)
         self.linear2 = nn.Linear(planes, planes)
-        self.bn2 = norm_layer(planes)
+        self.bn2 = None if norm_layer is None else norm_layer(planes)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x):
         out = self.linear1(x)
-        out = self.bn1(out)
+        if self.bn1 is not None:
+            out = self.bn1(out)
         out = self.relu(out)
 
         out = self.linear2(out)
-        out = self.bn2(out)
+        if self.bn1 is not None:
+            out = self.bn2(out)
 
         out += x
         out = self.relu(out)
@@ -34,28 +29,18 @@ class ResNetFFBlock(nn.Module):
         return out
 
 class ResNetFF(nn.Module):
-    def __init__(
-        self,
-        inplanes: int,
-        planes: int,
-        outputs: int,
-        num_blocks: int,
-        norm_layer: Optional[Callable[..., nn.Module]] = None
-    ) -> None:
+    def __init__(self, inplanes, planes, outputs, num_blocks, norm_layer=nn.BatchNorm1d):
         super(ResNetFF, self).__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm1d
-        self.blocks = ResNetFFBlock(inplanes, planes, norm_layer)
-        self.linear = nn.Linear(planes, outputs)
+        self.linear1 = nn.Linear(inplanes, planes)
+        blocks = [ResNetFFBlock(planes, planes, norm_layer) for i in range(num_blocks)]
+        self.blocks = nn.Sequential(*blocks)
+        self.linear2 = nn.Linear(planes, outputs)
                  
-    def forward(self, x: Tensor) -> Tensor:
-        out = x
-
+    def forward(self, x):
+        out = self.linear1(x)
         for block in self.blocks:
-            out = block(x)
-        out = self.linear(out)
-
-        return out
+            out = block(out)
+        return self.linear2(out)
     
 
 class FlyNetworkGRU2(nn.Module):
@@ -63,31 +48,36 @@ class FlyNetworkGRU2(nn.Module):
         super(FlyNetworkGRU2, self).__init__()
 
         self.hidden_size = args.h_dim
+        self.num_layers = args.num_layers
         self.gru = nn.GRU(args.x_dim, args.h_dim, args.num_layers)
-        self.head = ResNetFF(args.x_dim, args.r_dim, args.y_dim, args.num_blocks)
-        self.initWeights()
+        self.head = nn.Linear(args.h_dim, args.y_dim)
+        self.head = ResNetFF(args.h_dim, args.r_dim, args.y_dim, args.num_blocks, norm_layer=None)
+        #self.head = ResNetFF(args.h_dim, args.r_dim, args.y_dim, args.num_blocks)
+        #self.initWeights(args.init_weights)
 
     def forward(self, X, hidden):
+        hidden = hidden[0]
         T, B, D = X.size()
-        n, hidden = self.gru1(X, hidden)
+        n, hidden = self.gru(X, hidden)
         n = n.view(T, B, -1)
+        #output = self.head(n.view(T*B, n.shape[-1]))
         output = torch.stack([self.head(n[t, ...]) for t in range(T)], 0)
 
-        return output, hidden
+        return output, [hidden]
 
-    def initHidden(self, batch_sz, T=1, device="cpu"):
-        return Variable(torch.zeros(T, batch_sz, self.hidden_size, device=device))
+    def initHidden(self, batch_sz, device="cpu"):
+        return [Variable(torch.zeros(self.num_layers, batch_sz, self.hidden_size, device=device))]
 
-    def initWeights(self):
-        if args.init_weights == 'kaiming':
+    def initWeights(self, init_weights):
+        if init_weights == 'kaiming':
             for m in self.modules():
                 if isinstance(m, nn.Linear):
                     nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 elif isinstance(m, ResNetFFBlock):
-                    nn.init.constant_(m.bn1, weight, 1)
-                    nn.init.constant_(m.bn1, bias, 0)
-                    nn.init.constant_(m.bn2, weight, 0)
-                    nn.init.constant_(m.bn2, bias, 0)
+                    nn.init.constant_(m.bn1.weight, 1)
+                    nn.init.constant_(m.bn1.bias, 0)
+                    nn.init.constant_(m.bn2.weight, 0)
+                    nn.init.constant_(m.bn2.bias, 0)
                 elif isinstance(m, nn.GRU):
                     for name, param in m.named_parameters():
                         if 'bias' in name:

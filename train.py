@@ -6,7 +6,7 @@ import json
 import shutil
 from torch.utils.tensorboard import SummaryWriter
 
-from flyNetwork_RNN import FlyNetworkGRU, FlyNetworkSKIP6
+from flyNetwork_RNN import FlyNetworkGRU, FlyNetworkGRU2, FlyNetworkSKIP6
 from utils import get_real_positions_batch, get_real_positions_batch_random, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe, get_modelname, geometrical_steps, register_hooks, get_memory_usage, parse_args
 from rnn_utils import run_rnns, run_constant_velocity_baseline, run_stay_still_baseline
 from fly_utils import *
@@ -158,8 +158,9 @@ def compute_validation_loss(val, models, args, error_types):
                          num_rand_features=args.num_rand_features,
                          debug=args.debug
                 )
-                compute_loss(models, val_positions, val_feat_motion, results, error_types,
-                             args, params, loss_type='cross_entropy', train=False)
+                if args.motion_method != 'direct':
+                    compute_loss(models, val_positions, val_feat_motion, results, error_types,
+                                 args, params, loss_type='cross_entropy', train=False)
                 compute_loss(models, val_positions, val_feat_motion, results, error_types,
                              args, params, loss_type='nstep', train=False)
 
@@ -270,12 +271,12 @@ def lr_scheduler_init(optimizer, args):
         return None
     return scheduler
 
-def switch_video(v, models, batch_sz, num_samples, T=1):
+def switch_video(v, models, batch_sz, num_samples):
     trx, motiondata, params, basesize = v
     compute_model_inds(models, basesize)
     for m in models:
         m['hidden'] = m['model'].initHidden(batch_sz * len(m['inds']),
-                                            T=T, device=trx.values()[0].device)
+                                            device=trx.values()[0].device)
 
 def train_args(parser):
     parser.add_argument('--dataset_path', type=str, default=FLY_DATASET_PATH,

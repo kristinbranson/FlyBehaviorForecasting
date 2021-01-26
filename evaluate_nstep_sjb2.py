@@ -188,7 +188,8 @@ def compute_nstep_errors_on_dataset(video_list, args,
         else:
             run_prediction_model = run_rnns
             models = load_fly_models(args)
-            exp_name = args.save_path_male.split('/')[-1]
+            exp_name = args.save_path_male.split('/')[-1] if args.exp_name is None \
+                       else args.exp_name
         compute_model_inds(models, basesize)
 
         

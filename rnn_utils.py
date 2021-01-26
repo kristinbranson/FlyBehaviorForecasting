@@ -53,12 +53,13 @@ def run_rnns(models, T, num_samples, start_positions, start_feat_motion, params,
     t = num_real_frames - 1
     for i, model in enumerate(models):
         inds = model['inds']
+        num_layers = model['model'].num_layers if hasattr(model['model'], 'num_layers') else 1
         num_flies = len(inds)
         positions[i] = {k: torch.stack([v[:, t:t+1, inds]] * num_samples, 1).\
                         view([-1, 1, num_flies]) for k,v in start_positions.items()}
         motions[i] = torch.stack([start_feat_motion[:, t:t+1, inds, :]] * num_samples, 1).\
                      view([-1, 1, num_flies, start_feat_motion.shape[3]])
-        hiddens[i] = [torch.stack([h] * num_samples, 2).view([1, -1, h.shape[2]]) for h in hiddens[i]]
+        hiddens[i] = [torch.stack([h] * num_samples, 2).view([num_layers, -1, h.shape[2]]) for h in hiddens[i]]
 
     # Sequentially run the RNN one frame at a time, generating vision features using the
     # simulated position from the previous timestep
@@ -102,16 +103,21 @@ def forward_with_motion(model, feats_m, hidden, batch_sz, num_samples, params, m
     num_motion_feat = params['n_motions']
     num_motion_bins = params['binedges'].shape[0] - 1
 
-    binscores, hidden = model.forward(feats_m, hidden)
-    binscores = binscores.contiguous().view([T * batch_sz * num_samples * num_flies,
-                                             num_motion_feat, num_motion_bins]) * \
-                                             params['binprob_exp']#*.3
-    binprobs = F.softmax(binscores, dim=2)
-    binprobs = binprobs.reshape([T, batch_sz*num_samples, num_flies, num_motion_feat,
-                                 num_motion_bins])
+    output, hidden = model.forward(feats_m, hidden)
+    if motion_method == 'direct':
+        motion = output.view([T, batch_sz * num_samples, num_flies, num_motion_feat])
+        motion = motion.transpose(0, 1)
+        binscores = None
+    else:
+        binscores = output.contiguous().view([T * batch_sz * num_samples * num_flies,
+                                              num_motion_feat, num_motion_bins]) * \
+                                              params['binprob_exp']#*.3
+        binprobs = F.softmax(binscores, dim=2)
+        binprobs = binprobs.reshape([T, batch_sz*num_samples, num_flies, num_motion_feat,
+                                     num_motion_bins])
 
-    # Sample a predicted motion from the motion bin probabilities
-    motion = binprobs2motion(binprobs, params, method=motion_method).transpose(0, 1)
+        # Sample a predicted motion from the motion bin probabilities
+        motion = binprobs2motion(binprobs, params, method=motion_method).transpose(0, 1)
 
     return binscores, hidden, motion
 

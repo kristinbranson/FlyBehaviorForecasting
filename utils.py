@@ -146,13 +146,17 @@ def update_datasetwide_position_errors(errors, new_errors):
         progress_str += " %s=%f" % (k, (errors['sum_errors'][k] / errors['counts'][k]).mean())
     return progress_str
 
-def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'purple', 'black','cyan'], lines=['-', '-', '-', '-', '-', '-','-']):
+def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'purple', 'black','cyan','pink','orange'], lines=['-', '-', '-', '-', '-', '-', '-', '-', '-']):
     sum_errors, sum_sqr_errors, counts = {}, {}, {}
     x = np.arange(1,args.t_sim + 1)
     exp_names = args.exp_names.split(',')
     model_types = args.model_type.split(',')
     assert(len(exp_names) == len(model_types))
     labels = args.labels.split(',') if args.labels is not None else exp_names
+    savepath = '%s/figs/nstep%s' % (args.basepath, '/' + args.plot_name if args.plot_name is not None else '')
+    makedirs('%s/figs' % (args.basepath), exist_ok=True)
+    makedirs('%s/figs/nstep' % (args.basepath), exist_ok=True)  
+    makedirs(savepath, exist_ok=True)  
     for exp_name, model_type in zip(exp_names, model_types):
         sum_errors[exp_name], sum_sqr_errors[exp_name], counts[exp_name] = {}, {}, {}
         with open('%s/metrics/%s/%s.npy' % (args.basepath, model_type, exp_name)) as f:
@@ -168,8 +172,8 @@ def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'pur
         for i, exp_name in enumerate(exp_names):
             if k in sum_errors[exp_name]:
                 err = sum_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)
-                sq_err = sum_sqr_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)    
-                plt.errorbar(x, err, ls=lines[i], color=colors[i], label=labels[i], lw=3, alpha=0.8)  #, yerr=np.sqrt(-err ** 2 + sq_err)
+                sq_err = sum_sqr_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)
+                plt.errorbar(np.arange(1,err.shape[0] + 1), err, ls=lines[i], color=colors[i], label=labels[i], lw=3, alpha=0.8)  #, yerr=np.sqrt(-err ** 2 + sq_err)
 
         plt.title(k + " error")
         plt.xlabel('N-steps')
@@ -177,9 +181,8 @@ def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'pur
         matplotlib.rc('font', size=22)
         matplotlib.rc('axes', titlesize=22)
         ax.legend(fontsize=20, loc='lower center', bbox_to_anchor=(0.5,1.25), ncol=3)
-        makedirs('%s/figs/nstep' % (args.basepath), exist_ok=True)   
-        plt.savefig('%s/figs/nstep/%s_eval.pdf' \
-            % (args.basepath, k), format='pdf', bbox_inches='tight')
+        plt.savefig('%s/%s_eval.pdf' \
+            % (savepath, k), format='pdf', bbox_inches='tight')
         
 def makedirs(dir_name, exist_ok=True):
     if not exist_ok or not os.path.exists(dir_name):
@@ -231,7 +234,7 @@ def get_modelname(args, prefix="flynet"):
         + '_mtype:'+str(args.model_type)\
         + '_rtype:'+str(args.rnn_type)\
         + '_stype:'+str(args.lr_sched_type)\
-        + '_mot:'+str(args.motion_method)
+        + '_mot:'+str(args.motion_method) if args.exp_name is None else args.exp_name
 
 def iter_graph(root, callback, args):
     queue = [root]
@@ -317,6 +320,11 @@ def parse_args(fn = None):
                         help='Learning rate decay type')
     parser.add_argument('--gamma', type=float, default=0.3)
     parser.add_argument('--num_iters', type=int, default=None)
+    parser.add_argument('--num_layers', type=int, default=5)
+    parser.add_argument('--num_blocks', type=int, default=4)
+    parser.add_argument('--r_dim', type=int, default=128)
+    parser.add_argument('--init_weights', type=str, default='kaiming')
+    
     parser.add_argument('--debug', type=int, default=1)
     parser.add_argument('--validation_freq', type=int, default=1000,
                         help='Frequency of evaluation validation loss in terms of training iterations')
@@ -329,6 +337,8 @@ def parse_args(fn = None):
                         help='Add random vector of this dimensionality to state features as an input to the RNN, to represent stochasticity of behaviors')
     parser.add_argument('--save_path_male', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000')
     parser.add_argument('--save_path_female', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_femaleflies_10000')
+    parser.add_argument('--exp_name', type=str, default=None)
+    parser.add_argument('--plot_name', type=str, default=None)
     if fn is not None:
         fn(parser)
     
@@ -351,4 +361,5 @@ def parse_args(fn = None):
     if args.num_rand_features is None:
         args.num_rand_features = 0 if args.motion_method == 'multinomial' else 20
 
+    import pdb; pdb.set_trace()
     return args
