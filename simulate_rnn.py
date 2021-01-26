@@ -1128,8 +1128,6 @@ if __name__ == '__main__':
                         simulated_male_flies, simulated_female_flies,\
                         male_model=None, female_model=None, \
                         plottrxlen=100, t0=t0, t1=t1, bookkeepingF=False,\
-                        vision_save=False, fname=fname, mtype=args.mtype,\
-                        dtype=args.dtype)
 
     elif args.sim_type == 'Single':
         t0,t1=0,10000

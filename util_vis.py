@@ -10,6 +10,41 @@ from matplotlib.lines import Line2D
 import scipy.io as sio
 PPM = 7.790785
 
+def error_bar_plot(models, labels, colors, fdir, ftag, \
+        N=3, text_labels=['R71G01', 'R91B01', "' GAL4"], vmax=None,\
+        vmin=0,
+        ylabel='L1 Distance'):
+
+    X = np.arange(len(models)) 
+    width = 1 / (len(labels) +1) #0.2
+    
+    rects = []
+    #fig, ax = plt.subplots(figsize=(12, 12))
+    plt.figure()
+    ax = plt.axes([0,0,1,1])
+
+    k = len(labels) // 2
+    for i, (label, color) in enumerate(zip(labels[:N], colors[:N])): 
+        #rect1 = plt.bar(X+width*(i-N), models[:,i], width, label=label, color=color)
+        rect1 = plt.bar(X+width*(i-k), models[:,i], width, label=label, color=color)
+
+    if vmax is not None: ax.set_ylim([vmin,vmax])
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(X)
+    ax.set_xticklabels(text_labels)
+    #plt.xticks(rotation=45)
+    if fdir == 'chaseeval':
+        ax.set_ylim([0,0.075])
+        ax.legend()
+
+    else:
+        ax.legend(fontsize=20, loc='upper center', bbox_to_anchor=(0.5,1.35), ncol=3)
+        #ax.get_xaxis().set_visible(False)
+
+    plt.savefig('./figs/%s/errorbar_%s.pdf' % (fdir, ftag), format='pdf', bbox_inches='tight') 
+    plt.close()
+
+
 
 def zeropad_hists(hists):
 
