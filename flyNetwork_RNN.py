@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import torch.nn.functional as F
-#use_cuda=1
 
 class ResNetFFBlock(nn.Module):
     def __init__(self, inplanes, planes, norm_layer=None):
@@ -52,7 +51,6 @@ class FlyNetworkGRU2(nn.Module):
         self.gru = nn.GRU(args.x_dim, args.h_dim, args.num_layers)
         self.head = nn.Linear(args.h_dim, args.y_dim)
         self.head = ResNetFF(args.h_dim, args.r_dim, args.y_dim, args.num_blocks, norm_layer=None)
-        #self.head = ResNetFF(args.h_dim, args.r_dim, args.y_dim, args.num_blocks)
         #self.initWeights(args.init_weights)
 
     def forward(self, X, hidden):
@@ -60,7 +58,6 @@ class FlyNetworkGRU2(nn.Module):
         T, B, D = X.size()
         n, hidden = self.gru(X, hidden)
         n = n.view(T, B, -1)
-        #output = self.head(n.view(T*B, n.shape[-1]))
         output = torch.stack([self.head(n[t, ...]) for t in range(T)], 0)
 
         return output, [hidden]

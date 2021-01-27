@@ -6,10 +6,12 @@ import os
 import json
 import shutil
 
-from utils import get_real_positions_batch, add_velocities, compute_position_errors, makedirs, update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe, parse_args
+from utils import get_real_positions_batch, add_velocities, compute_position_errors, makedirs,\
+    update_datasetwide_position_errors, plot_errors, replace_in_file, nan_safe, parse_args
 from rnn_utils import run_rnns, run_constant_velocity_baseline, run_stay_still_baseline
-from fly_utils import load_fly_models, compute_model_inds, load_video, feature_dims, ERROR_TYPES_FLIES, \
-    VELOCITY_FIELDS_FLIES, FLY_DATASET_PATH, video16_path, TEST, MALE, FEMALE, load_video_and_setup
+from fly_utils import load_fly_models, compute_model_inds, load_video, feature_dims,\
+    ERROR_TYPES_FLIES, VELOCITY_FIELDS_FLIES, FLY_DATASET_PATH, video16_path, TEST, MALE,\
+    FEMALE, load_video_and_setup
 from train import compute_cross_entropy_errors
                                     
 def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
@@ -44,7 +46,8 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
         return {k: ((all_positions[k] if k in all_positions else []) + \
                     [v.cpu().numpy()]) for k, v in positions.items()}
     def to_jsonable(all_positions, perms, num_samples=1):
-        return [{k: nan_safe(v[0].reshape([-1, num_samples]+list(v[0].shape[1:]))[i]).tolist() for k, v in all_positions.items()} for i in perms]
+        return [{k: nan_safe(v[0].reshape([-1, num_samples]+list(v[0].shape[1:]))[i]).tolist()\
+                 for k, v in all_positions.items()} for i in perms]
     
     progress = tqdm(enumerate(range(t_start + T_past, t_end - T_sim, t_stride * batch_sz)))
     for ii, t in progress:
@@ -81,7 +84,8 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
                                                  device=device)
             prev[k] = torch.zeros([batch_sz*num_samples, 1, num_flies],  device=device)
             for mi, m in enumerate(models):
-                prev[k][:, :, m['inds']] = torch.stack([results[mi][0]['positions'][k][:, -1, :]]*num_samples, 1).view([-1, 1, len(m['inds'])])
+                prev[k][:, :, m['inds']] = torch.stack([results[mi][0]['positions'][k][:, -1, :]]\
+                                                       * num_samples, 1).view([-1, 1, len(m['inds'])])
                 for ti in range(T_sim):
                     simulated_positions[k][:, ti:ti+1, m['inds']] = results[mi][ti+1]['positions'][k]
         add_velocities(simulated_positions, velocity_fields, prev=prev)
@@ -99,8 +103,10 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
         binscores = torch.zeros([T_past*batch_sz, num_flies,
                                  num_motion_feat, num_motion_bins],  device=device)
         for mi, m in enumerate(models):
-            binscores[:, m['inds'], :, :] = results[mi][0]['binscores'].contiguous().view(-1, len(m['inds']), num_motion_feat, num_motion_bins)
-        ce_errors = compute_cross_entropy_errors(binscores.view(-1, num_motion_feat, num_motion_bins), past_feat_motion, params)
+            binscores[:, m['inds'], :, :] = results[mi][0]['binscores'].contiguous().\
+                                            view(-1, len(m['inds']), num_motion_feat, num_motion_bins)
+        ce_errors = compute_cross_entropy_errors(binscores.view(-1, num_motion_feat, num_motion_bins),
+                                                 past_feat_motion, params)
         errors['cross_entropy'] = ce_errors.mean(4).permute(1, 2, 0, 3)
 
         progress_str = "t=%d, Mean Errors: " % t
@@ -220,9 +226,12 @@ def compute_nstep_errors_on_dataset(video_list, args,
 def evaluate_args(parser):
     parser.add_argument('--dataset_path', type=str, default=FLY_DATASET_PATH,
                         help='Location of real videos of observed trajectories')
-    parser.add_argument('--t_stride', type=int, default=30, help='Compute nstep error over trajectories sampled every t_stride frames for each video')
-    parser.add_argument('--t_start', type=int, default=20, help='First frame to sample trajectories from')
-    parser.add_argument('--t_end', type=int, default=None, help='Last frame to sample trajectories from')
+    parser.add_argument('--t_stride', type=int, default=30,
+                        help='Compute nstep error over trajectories sampled every t_stride frames for each video')
+    parser.add_argument('--t_start', type=int, default=20,
+                        help='First frame to sample trajectories from')
+    parser.add_argument('--t_end', type=int, default=None,
+                        help='Last frame to sample trajectories from')
     
     parser.add_argument('--exp_names', type=str, default=None)
     parser.add_argument('--labels', type=str, default=None)

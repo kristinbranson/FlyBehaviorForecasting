@@ -6,8 +6,7 @@ from utils import compute_position_errors
 
 def run_rnns(models, T, num_samples, start_positions, start_feat_motion, params, basesize,
              num_real_frames=None, train=False, motion_method='multinomial',
-             num_rand_features=0, debug=0
-):
+             num_rand_features=0, debug=0):
     if num_real_frames is None:
         num_real_frames = start_positions.values()[0].shape[1]
     batch_sz = start_positions.values()[0].shape[0]
@@ -59,7 +58,8 @@ def run_rnns(models, T, num_samples, start_positions, start_feat_motion, params,
                         view([-1, 1, num_flies]) for k,v in start_positions.items()}
         motions[i] = torch.stack([start_feat_motion[:, t:t+1, inds, :]] * num_samples, 1).\
                      view([-1, 1, num_flies, start_feat_motion.shape[3]])
-        hiddens[i] = [torch.stack([h] * num_samples, 2).view([num_layers, -1, h.shape[2]]) for h in hiddens[i]]
+        hiddens[i] = [torch.stack([h] * num_samples, 2).view([num_layers, -1, h.shape[2]])\
+                      for h in hiddens[i]]
 
     # Sequentially run the RNN one frame at a time, generating vision features using the
     # simulated position from the previous timestep
@@ -105,10 +105,13 @@ def forward_with_motion(model, feats_m, hidden, batch_sz, num_samples, params, m
 
     output, hidden = model.forward(feats_m, hidden)
     if motion_method == 'direct':
+        # Directly output the motion delta from the RNN (train using regression)
         motion = output.view([T, batch_sz * num_samples, num_flies, num_motion_feat])
         motion = motion.transpose(0, 1)
         binscores = None
     else:
+        # Bin the possible motion outputs such that the RNN outputs probabilities for each
+        # motion bin (usually means training with a bin classification loss)
         binscores = output.contiguous().view([T * batch_sz * num_samples * num_flies,
                                               num_motion_feat, num_motion_bins]) * \
                                               params['binprob_exp']#*.3

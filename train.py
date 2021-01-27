@@ -145,7 +145,7 @@ def compute_validation_loss(val, models, args, error_types):
             trx, motiondata, params, basesize = v
             old_batch_sz_v = None
             for tv in range(1, trx['x'].shape[0] - T_past - T_sim - 2, batch_sz * T_past):
-                batch_sz_v = min(batch_sz, (trx['x'].shape[0] - T_past - 2 - tv) // T_past)
+                batch_sz_v = min(batch_sz, (trx['x'].shape[0] - T_sim - 2 - tv) // T_past)
                 if batch_sz_v != old_batch_sz_v:
                     switch_video(v, models, batch_sz_v, num_samples)
                     old_batch_sz_v = batch_sz_v

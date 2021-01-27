@@ -8,15 +8,16 @@ import gc
 import argparse
 
 def get_real_positions_batch(t, trx, T, t_stride, batch_sz, basesize=None, motiondata=None):
-    '''
-    Extract a batch of fly trajectories (positions) and their respective features (feats)
-    from the dataset trx
-    Let positions be a a dictionary of fly positions (each key is something like
-    x, y, l_wing_ang, etc.).  positions[k] will be a batch_sz X T X num_flies tensor 
-    trajectories of T timesteps sampled starting at frame t
-    and feats will be a batch_sz X num_feats X T X num_flies tensor extracted from 
-    motiondata
-    '''
+  '''
+  Extract a batch of fly trajectories (positions) and their respective features (feats)
+  from the dataset trx
+  Let positions be a a dictionary of fly positions (each key is something like
+  x, y, l_wing_ang, etc.).  positions[k] will be a batch_sz X T X num_flies tensor 
+  trajectories of T timesteps sampled starting at frame t
+  and feats will be a batch_sz X num_feats X T X num_flies tensor extracted from 
+  motiondata
+  '''
+  try:
     positions = {}
     for k,v in trx.items():
         p = [v[s : s + T, :] for s in range(t, t + t_stride * batch_sz, t_stride)]
@@ -27,8 +28,12 @@ def get_real_positions_batch(t, trx, T, t_stride, batch_sz, basesize=None, motio
     if motiondata is None:
         return positions
     else:
-        motion_feats = torch.stack([motiondata[:, s : s + T, :] for s in range(t, t + t_stride * batch_sz, t_stride)]).permute(0, 2, 3, 1)
+        motion_feats = torch.stack([motiondata[:, s : s + T, :]\
+                                    for s in range(t, t + t_stride * batch_sz, t_stride)])
+        motion_feats = motion_feats.permute(0, 2, 3, 1)
         return positions, motion_feats
+  except:
+    import pdb; pdb.set_trace()
 
 def get_real_positions_batch_random(trx, T, batch_sz, basesize=None, motiondata=None, t_pad=2):
     '''
@@ -65,7 +70,8 @@ def add_velocities(positions, fields, prev=None):
         device = positions[k].device
         first = positions[k][:, 0:1, :] - prev[k][:, -1:, :] if prev is not None else \
                 torch.zeros([positions[k].shape[0], 1, positions[k].shape[2]], device=device)
-        positions['vel' + k] = torch.cat([first, positions[k][:, 1:, :] - positions[k][:, :-1, :]], 1)
+        positions['vel' + k] = torch.cat([first, positions[k][:, 1:, :] -
+                                          positions[k][:, :-1, :]], 1)
 
 def compute_position_errors(simulated_positions, true_positions, error_types, num_samples=1,
                             soft=False, eps=1e-8):
@@ -146,14 +152,17 @@ def update_datasetwide_position_errors(errors, new_errors):
         progress_str += " %s=%f" % (k, (errors['sum_errors'][k] / errors['counts'][k]).mean())
     return progress_str
 
-def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'purple', 'black','cyan','pink','orange'], lines=['-', '-', '-', '-', '-', '-', '-', '-', '-']):
+def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'purple',
+                                           'black','cyan','pink','orange'],
+                lines=['-', '-', '-', '-', '-', '-', '-', '-', '-']):
     sum_errors, sum_sqr_errors, counts = {}, {}, {}
     x = np.arange(1,args.t_sim + 1)
     exp_names = args.exp_names.split(',')
     model_types = args.model_type.split(',')
     assert(len(exp_names) == len(model_types))
     labels = args.labels.split(',') if args.labels is not None else exp_names
-    savepath = '%s/figs/nstep%s' % (args.basepath, '/' + args.plot_name if args.plot_name is not None else '')
+    savepath = '%s/figs/nstep%s' % (args.basepath, '/' + args.plot_name\
+                                    if args.plot_name is not None else '')
     makedirs('%s/figs' % (args.basepath), exist_ok=True)
     makedirs('%s/figs/nstep' % (args.basepath), exist_ok=True)  
     makedirs(savepath, exist_ok=True)  
@@ -173,7 +182,9 @@ def plot_errors(args, error_types, colors=['blue','red','green', 'magenta', 'pur
             if k in sum_errors[exp_name]:
                 err = sum_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)
                 sq_err = sum_sqr_errors[exp_name][k].sum(1) / counts[exp_name][k].sum(1)
-                plt.errorbar(np.arange(1,err.shape[0] + 1), err, ls=lines[i], color=colors[i], label=labels[i], lw=3, alpha=0.8)  #, yerr=np.sqrt(-err ** 2 + sq_err)
+                plt.errorbar(np.arange(1,err.shape[0] + 1), err, ls=lines[i], color=colors[i],
+                             label=labels[i], lw=3, alpha=0.8)
+                #, yerr=np.sqrt(-err ** 2 + sq_err)
 
         plt.title(k + " error")
         plt.xlabel('N-steps')
@@ -252,6 +263,9 @@ def iter_graph(root, callback, args):
 
 stack = None
 def register_hooks(var):
+    """ 
+    Debugging function that checks for bad gradients (nan or inf)
+    """
     fn_dict = {}
     global stack
     stack = []
@@ -259,12 +273,16 @@ def register_hooks(var):
         stack = args
         stack += [fn]
         def register_grad(grad_input, grad_output):
-            if not all(t is None or (torch.all(~torch.isnan(t)) and torch.all(~torch.isinf(t))) for t in grad_input):
+            if not all(t is None or (torch.all(~torch.isnan(t)) and torch.all(~torch.isinf(t)))\
+                       for t in grad_input):
                 import pdb; pdb.set_trace()
-            if not all(t is None or (torch.all(~torch.isnan(t)) and torch.all(~torch.isinf(t))) for t in grad_output):
+            if not all(t is None or (torch.all(~torch.isnan(t)) and torch.all(~torch.isinf(t)))\
+                       for t in grad_output):
                 import pdb; pdb.set_trace()
-            assert all(t is None or torch.all(~torch.isnan(t)) for t in grad_input), "{fn} grad_input={grad_input} grad_output={grad_output}"
-            assert all(t is None or torch.all(~torch.isnan(t)) for t in grad_output), "{fn} grad_input={grad_input} grad_output={grad_output}"
+            assert all(t is None or torch.all(~torch.isnan(t)) for t in grad_input),\
+                "{fn} grad_input={grad_input} grad_output={grad_output}"
+            assert all(t is None or torch.all(~torch.isnan(t)) for t in grad_output),\
+                "{fn} grad_input={grad_input} grad_output={grad_output}"
             
             fn_dict[fn] = grad_input
         fn.register_hook(register_grad)
@@ -304,35 +322,45 @@ def parse_args(fn = None):
                         help='Whether or not to run on the GPU')
     parser.add_argument('--dataset_type', type=str, default='gmr',
                         help='Name of the dataset')
-    parser.add_argument('--bin_type', type=str, default='perc',
+    parser.add_argument('--bin_type', type=str, default='perc', choices=['linear', 'perc'],
                         help='Method used to bin RNN predicted motion outputs')
-    parser.add_argument('--model_type', type=str, default='rnn50', help='Model architecture')
+    parser.add_argument('--model_type', type=str, default='rnn50', help='Model architecture.  Set to rnn50 or hrnn')
     parser.add_argument('--h_dim', type=int, default=100, help='RNN hidden state dimensions')
     parser.add_argument('--num_motion_bins', type=int, default=101,
                         help='number of motion bins for RNN output')
     parser.add_argument('--batch_sz', type=int, default=None,
                         help='Number of trajectories in each batch')
     parser.add_argument('--loss_type', type=str, default='nstep',
+                        choices=['nstep', 'cross_entropy'],
                         help='Type of training loss function')
-    parser.add_argument('--rnn_type', type=str, default='rnn', help='Type of RNN model')
-    parser.add_argument('--learning_rate', type=float, default=None)
+    parser.add_argument('--rnn_type', type=str, default='rnn', choices=['rnn', 'hrnn', 'rnnc'],
+                        help='Type of RNN model')
+    parser.add_argument('--learning_rate', type=float, default=None, help='SGD learning rate')
     parser.add_argument('--lr_sched_type', type=str, default='multstep',
+                        choices=['lambda', 'step', 'exp', 'multstep', 'cyclic'], 
                         help='Learning rate decay type')
-    parser.add_argument('--gamma', type=float, default=0.3)
-    parser.add_argument('--num_iters', type=int, default=None)
-    parser.add_argument('--num_layers', type=int, default=5)
-    parser.add_argument('--num_blocks', type=int, default=4)
-    parser.add_argument('--r_dim', type=int, default=128)
-    parser.add_argument('--init_weights', type=str, default='kaiming')
+    parser.add_argument('--gamma', type=float, default=0.3,
+                        help="Additional parameter for custom learning rate decay policies")
+    parser.add_argument('--num_iters', type=int, default=None, help="Number of SGD iterations")
+    parser.add_argument('--num_layers', type=int, default=5,
+                        help="Number or layers per RNN timestep")
+    parser.add_argument('--num_blocks', type=int, default=4,
+                        help="Number of ResNet blocks in RNN prediction head")
+    parser.add_argument('--r_dim', type=int, default=128,
+                        help="Number of channels in each RNN prediction head block")
+    parser.add_argument('--init_weights', type=str, default='kaiming',
+                        help="Convnet weight initialization method (not yet supported)")
     
-    parser.add_argument('--debug', type=int, default=1)
+    parser.add_argument('--debug', type=int, default=1, help="Debug checking/logging level")
     parser.add_argument('--validation_freq', type=int, default=1000,
                         help='Frequency of evaluation validation loss in terms of training iterations')
     parser.add_argument('--save_freq', type=int, default=1000,
                         help='Frequency of saving model in terms of training iterations')
-    parser.add_argument('--save_dir', type=str, default="./models")
+    parser.add_argument('--save_dir', type=str, default="./models",
+                        help="Location to save models")
     parser.add_argument('--motion_method', type=str, default=None,
-                        help='Method used to predict motion from bin probabilities (use multinomial or softmax)')
+                        choices=["direct", "soft", "multinomial"],
+                        help='Method used to predict motion. Use "direct" for the RNN to directly output motion deltas.  Otherwise, the RNN outputs motion bin probabilities.  If "multinomial" is used, motion deltas are drawn from a multionimal distribution according to bin probabilities.  If "soft" is used, motion deltas are deterministically set to the expected value of bin centers according to bin probabilities')
     parser.add_argument('--num_rand_features', type=int, default=None,
                         help='Add random vector of this dimensionality to state features as an input to the RNN, to represent stochasticity of behaviors')
     parser.add_argument('--save_path_male', type=str, default='./models/gmr/flyNet_gru50steps_512batch_sz_10000epochs_0.01lr_101bins_100hids__onehot0_visionF1_vtype:full_dtype:gmr_btype:perc_maleflies_10000')
@@ -361,5 +389,4 @@ def parse_args(fn = None):
     if args.num_rand_features is None:
         args.num_rand_features = 0 if args.motion_method == 'multinomial' else 20
 
-    import pdb; pdb.set_trace()
     return args
