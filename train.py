@@ -202,12 +202,13 @@ def compute_loss(models, real_positions, real_feat_motion, results, error_types,
                 loss = errors.mean()
                 errors = {'cross_entropy': errors.permute(1, 2, 0, 3, 4) }
                 m['loss'] = m['loss'] + loss
-            elif loss_type == 'nstep':
+            elif 'nstep' in loss_type:
                 # n-step k-sample error from "Evaluation metrics for behaviour modeling"
                 # where n=T-num_real_frames, k=num_samples.  Here our RNN samples k random
                 # trajectory samples n-steps into the future, and the loss is the minimum
                 # distance among the k samples to the true observed trajectory.  For
                 # training, we use a softmin instead of a min
+                w = 1. if len(loss_type) == 5 else float(loss_type[5:])
                 positions_new_m = result['positions']
                 num_samples = positions_new_m.values()[0].shape[0] // batch_sz
                 sim_positions = {k: v.view([batch_sz, num_samples, Tc, len(inds)]) \
@@ -217,8 +218,10 @@ def compute_loss(models, real_positions, real_feat_motion, results, error_types,
                 errors = compute_position_errors(sim_positions, future_positions, error_types,
                                                  num_samples=num_samples, soft=train)
                 for name in error_types:
-                    err = errors[name + '_min']
-                    m['loss'] = m['loss'] + err.mean() / len(results[mi])
+                    err = errors[name + '_min'].mean() * w if w > 0 else 0
+                    if w < 1:
+                        err += errors[name].mean() * (1 - w)
+                    m['loss'] = m['loss'] + err / len(results[mi])
             else:
                 assert(args.loss_type is None)
             t += Tc

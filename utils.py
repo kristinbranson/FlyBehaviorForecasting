@@ -245,7 +245,9 @@ def get_modelname(args, prefix="flynet"):
         + '_mtype:'+str(args.model_type)\
         + '_rtype:'+str(args.rnn_type)\
         + '_stype:'+str(args.lr_sched_type)\
-        + '_mot:'+str(args.motion_method) if args.exp_name is None else args.exp_name
+        + '_mot:'+str(args.motion_method)\
+        + ('_init:'+str(args.init_weights) if args.init_weights is not None else '')\
+        if args.exp_name is None else args.exp_name
 
 def iter_graph(root, callback, args):
     queue = [root]
@@ -331,7 +333,7 @@ def parse_args(fn = None):
     parser.add_argument('--batch_sz', type=int, default=None,
                         help='Number of trajectories in each batch')
     parser.add_argument('--loss_type', type=str, default='nstep',
-                        choices=['nstep', 'cross_entropy'],
+                        #choices=['nstep', 'nstep0', 'nstep1', 'nstep.5', 'cross_entropy'],
                         help='Type of training loss function')
     parser.add_argument('--rnn_type', type=str, default='rnn', choices=['rnn', 'hrnn', 'rnnc'],
                         help='Type of RNN model')
@@ -348,7 +350,7 @@ def parse_args(fn = None):
                         help="Number of ResNet blocks in RNN prediction head")
     parser.add_argument('--r_dim', type=int, default=128,
                         help="Number of channels in each RNN prediction head block")
-    parser.add_argument('--init_weights', type=str, default='kaiming',
+    parser.add_argument('--init_weights', type=str, default=None,
                         help="Convnet weight initialization method (not yet supported)")
     
     parser.add_argument('--debug', type=int, default=1, help="Debug checking/logging level")
@@ -372,7 +374,7 @@ def parse_args(fn = None):
     
     args = parser.parse_args()
 
-    if args.loss_type == 'nstep':
+    if 'nstep' in args.loss_type:
         # Default to training using nstep loss over 10 samples and 30 timesteps
         args.motion_method = 'softmax' if args.motion_method is None else args.motion_method
         args.num_iters = 30000 if args.num_iters is None else args.num_iters

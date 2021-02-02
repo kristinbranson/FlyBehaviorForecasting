@@ -27,7 +27,8 @@ class Fly {
     static triangle_pts = [[.5,-.5], [.5,.5], [-.5, 0]];
     static left_wing_pts = [[0,0], [1,0]];
     static right_wing_pts = [[0,0], [1,0]];
-    static num_path_frames = 50;
+    static num_path_frames = 100;
+    static colors = ['Aqua', 'BlueViolet', 'Coral', 'DarkGoldenRod', 'DarkGreen', 'DarkMagenta', 'DarkSlateGray', 'LightGreen', 'CadetBlue', 'LightSteelBlue', 'MediumOrchid', 'MistyRose', 'Olive', 'SaddleBrown', 'Yellow', 'RosyBrown', 'PaleVioletRed', 'Wheat', 'YellowGreen', 'DarkKhaki'];
     
     constructor(fly_ind, chamber, female, type, data, sample_ind=0, past=null) {
 	this.fly_ind = fly_ind;
@@ -48,6 +49,7 @@ class Fly {
 
     initialize_svg() {
 	var svg = SVG;
+	var color = Fly.colors[this.fly_ind % Fly.colors.length];
 	this.group = document.createElementNS(svg, 'g')
 	this.triangle = document.createElementNS(svg, 'polygon');
 	this.left_wing = document.createElementNS(svg, 'polyline');
@@ -65,6 +67,8 @@ class Fly {
 	this.triangle.setAttribute("class", " triangle " + this.style);
 	this.left_wing.setAttribute("class", this.style + " left_wing");
 	this.right_wing.setAttribute("class", this.style + " right_wing");
+	this.triangle.setAttributeNS(null, "stroke", color);
+	//this.triangle.setAttribute("stroke", color);
 	this.group.appendChild(this.triangle);
 	this.group.appendChild(this.left_wing);
 	this.group.appendChild(this.right_wing);
@@ -119,15 +123,11 @@ class Fly {
 	if(!this.is_visible)
 	    e = -1;
 	for(var i = s; i <= e; i++, j++) {
-	    var w2 = 1 - (t - i) / Fly.num_path_frames;
-	    var w1 = (t - i) / Fly.num_path_frames;
-	    var color = get_color(c1[0]*w1 + c2[0]*w2, c1[1]*w1 + c2[1]*w2, c1[2]*w1 + c2[2]*w2);
-	    if(i >= xs.length || i < 0 || j < 0 || j >= this.path.length) {
-		var tm = 0;
-	    }
-	    if(this.type == 'simulated') {
-		var tm = 0;
-	    }
+	    //var w2 = 1 - (t - i) / Fly.num_path_frames;
+	    //var w1 = (t - i) / Fly.num_path_frames;
+	    //var color = get_color(c1[0]*w1 + c2[0]*w2, c1[1]*w1 + c2[1]*w2, c1[2]*w1 + c2[2]*w2);
+	    var color = i >= this.t_start ? Fly.colors[this.fly_ind % Fly.colors.length] : 'Gray';
+	    
 	    this.path[j].setAttributeNS(null, 'x1', xs[i][f])
 	    this.path[j].setAttributeNS(null, 'y1', ys[i][f])
 	    this.path[j].setAttributeNS(null, 'x2', xs[i-1][f])

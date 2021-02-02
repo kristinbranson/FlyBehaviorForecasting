@@ -3,9 +3,30 @@
     <link rel="stylesheet" type="text/css" href="visualize_tracks.css">
     <script src="visualize_tracks.js"></script>
     <script>
-      var json_file = "{{JSON_FILE}}";
+      var json_file = "data.json";
       var chamber = null;
+      var data = null;
+      var example_ind = 0;
+      var chamber_id = "chamber";
 
+      function next_example() {
+        example_ind += 1;
+        change_example_ind();
+      }
+      function prev_example() {
+        example_ind -= 1;
+        change_example_ind();
+      }
+      function change_example_ind() {
+            var svg = document.getElementById(chamber_id);
+            svg.parentNode.replaceChild(svg.cloneNode(false), svg);
+            chamber = new Chamber(chamber_id, data, example_ind=example_ind);
+            frame = document.getElementById("frame");
+            frame.max = chamber.T-1;
+            frame.value = chamber.t;
+            document.getElementById("prev_example").style.visibility = example_ind == 0 ? "hidden" : "visible";
+            document.getElementById("next_example").style.visibility = example_ind == data["future"].length-1 ? "hidden" : "visible";
+      }
       function init_chamber(id) {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', json_file, true);
@@ -13,10 +34,10 @@
         xhr.onload = function() {
           var status = xhr.status;
           if (xhr.readyState == 4 && status === 200) {
-            chamber = new Chamber(id, xhr.response);
-            frame = document.getElementById("frame");
-            frame.max = chamber.T-1;
-            frame.value = chamber.t;
+            data = xhr.response;
+            example_ind = 0;
+            chamber_id = id;
+            change_example_ind();
           } else {
       
           }
@@ -53,6 +74,8 @@
       <svg id="chamber">
       </svg>
       <br><div id="controls">
+	<a href="#" id="prev_example" class="previous round" onclick="prev_example()">&#8249;</a>
+	<a href="#" id="next_example" class="next round" onclick="next_example()">&#8250;</a>
 	<input type="checkbox" id="future" name="future" checked onchange="synch_show_future();"><label for="future"> Show Future</label>
 	<select name="simulated" id="simulated" onchange="synch_simulated_visible()" value="show_best_simulated">
 	  <option value="hide_simulated">Hide Simulated</option>

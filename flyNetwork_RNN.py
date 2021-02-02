@@ -51,7 +51,7 @@ class FlyNetworkGRU2(nn.Module):
         self.gru = nn.GRU(args.x_dim, args.h_dim, args.num_layers)
         self.head = nn.Linear(args.h_dim, args.y_dim)
         self.head = ResNetFF(args.h_dim, args.r_dim, args.y_dim, args.num_blocks, norm_layer=None)
-        #self.initWeights(args.init_weights)
+        self.initWeights(args.init_weights)
 
     def forward(self, X, hidden):
         hidden = hidden[0]
@@ -71,10 +71,16 @@ class FlyNetworkGRU2(nn.Module):
                 if isinstance(m, nn.Linear):
                     nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 elif isinstance(m, ResNetFFBlock):
-                    nn.init.constant_(m.bn1.weight, 1)
-                    nn.init.constant_(m.bn1.bias, 0)
-                    nn.init.constant_(m.bn2.weight, 0)
-                    nn.init.constant_(m.bn2.bias, 0)
+                    if m.bn1 is not None:
+                        nn.init.constant_(m.bn1.weight, 1)
+                        nn.init.constant_(m.bn1.bias, 0)
+                    if m.bn2 is not None:
+                        nn.init.constant_(m.bn2.weight, 0)
+                        nn.init.constant_(m.bn2.bias, 0)
+                    nn.init.kaiming_normal_(m.linear1.weight, mode='fan_out', nonlinearity='relu')
+                    nn.init.constant_(m.linear1.bias, 0)
+                    nn.init.kaiming_normal_(m.linear2.weight, mode='fan_out', nonlinearity='relu')
+                    nn.init.constant_(m.linear2.bias, 0)
                 elif isinstance(m, nn.GRU):
                     for name, param in m.named_parameters():
                         if 'bias' in name:

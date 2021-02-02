@@ -2,6 +2,7 @@ import torch
 import h5py
 import numpy as np
 import traceback
+import math
 
 ERROR_TYPES_FLIES = {#'x': 'L1:x:0', 'y': 'L1:y:0',
                      'position': 'L2:x|y:1', #'velocity': 'L2:velx|vely',
@@ -180,9 +181,24 @@ default_params['arena_radius'] = 476.3236
 def feature_dims(args, params):
     return params['n_oma'] * 2 + params['n_motions'] + args.num_rand_features
 
-def compute_features(positions, feat_motion, params, rand_features=None, train=False):
+def compute_features(positions, feat_motion, params, rand_features=None, train=False,
+                     max_sz=1280):
     T = feat_motion.shape[1]
-    A = list(compute_fly_vision_features(positions, params)) + [feat_motion]
+    batch_sz = feat_motion.shape[0]
+    if batch_sz * T > max_sz:
+        # To reduce memory usage, break positions/features into chunks along the batch dimension
+        chunks = int(math.ceil(batch_sz * T / float(max_sz)))
+        chunk_sz = int(math.ceil(batch_sz / float(chunks)))
+        flyvisions, chambervisions = [], []
+        for i in range(0, batch_sz, chunk_sz):
+            i2 = min(i + chunk_sz, batch_sz)
+            positions_c = {k: v[i:i2, ...] for k,v in positions.items()}
+            flyvision, chambervision = compute_fly_vision_features(positions_c, params)
+            flyvisions.append(flyvision)
+            chambervisions.append(chambervision)
+        A = [torch.cat(flyvisions, 0), torch.cat(chambervisions, 0), feat_motion]
+    else:
+        A = list(compute_fly_vision_features(positions, params)) + [feat_motion]
     if rand_features is not None:
         A += [rand_features]
     feats_m = torch.cat(A, 3)
@@ -214,7 +230,6 @@ def compute_fly_vision_features(positions, params, distF=0):
     batch_sz, T, num_flies = x.shape
     num_bins, num_bins_chamber = params['n_oma'], params['n_oma']
     chamber_xs, chamber_ys = params['J'].flatten(), params['I'].flatten()
-    #chamber_xs, chamber_ys = chamber_xs[::8], chamber_ys[::8]
     num_chamber_pts = chamber_xs.shape[0]
 
     if torch.isnan(x).any() or torch.isnan(y).any() or torch.isnan(theta).any() or torch.isnan(a).any() or torch.isnan(b).any():
@@ -487,7 +502,10 @@ def load_rnn(args, load_path):
         from flyNetwork_RNN import FlyNetworkSKIP6
         model = FlyNetworkSKIP6(args)
     elif 'rnn' in args.model_type:
-        from flyNetwork_RNN import FlyNetworkGRU
+        if 'rnnc' in args.rnn_type:
+            from flyNetwork_RNN import FlyNetworkGRU2 as FlyNetworkGRU
+        else:
+            from flyNetwork_RNN import FlyNetworkGRU
         model = FlyNetworkGRU(args)
 
     if args.use_cuda: model = model.cuda()

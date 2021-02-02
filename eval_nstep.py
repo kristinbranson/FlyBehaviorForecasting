@@ -99,15 +99,16 @@ def compute_nstep_errors_on_video(models, video, exp_name, video_dir, args,
                                          num_samples=num_samples)
 
         # Compute log-likelihoods
-        ce_errors = []
-        binscores = torch.zeros([T_past*batch_sz, num_flies,
-                                 num_motion_feat, num_motion_bins],  device=device)
-        for mi, m in enumerate(models):
-            binscores[:, m['inds'], :, :] = results[mi][0]['binscores'].contiguous().\
-                                            view(-1, len(m['inds']), num_motion_feat, num_motion_bins)
-        ce_errors = compute_cross_entropy_errors(binscores.view(-1, num_motion_feat, num_motion_bins),
-                                                 past_feat_motion, params)
-        errors['cross_entropy'] = ce_errors.mean(4).permute(1, 2, 0, 3)
+        if 'binscores' in results[0][0] and results[0][0]['binscores'] is not None:
+            ce_errors = []
+            binscores = torch.zeros([T_past*batch_sz, num_flies,
+                                     num_motion_feat, num_motion_bins],  device=device)
+            for mi, m in enumerate(models):
+                binscores[:, m['inds'], :, :] = results[mi][0]['binscores'].contiguous().\
+                                                view(-1, len(m['inds']), num_motion_feat, num_motion_bins)
+            ce_errors = compute_cross_entropy_errors(binscores.view(-1, num_motion_feat, num_motion_bins),
+                                                     past_feat_motion, params)
+            errors['cross_entropy'] = ce_errors.mean(4).permute(1, 2, 0, 3)
 
         progress_str = "t=%d, Mean Errors: " % t
         if all_errors is not None:
