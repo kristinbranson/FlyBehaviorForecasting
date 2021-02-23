@@ -1,0 +1,12 @@
+The following functions are either directly from or adapted from Michael Reiser's code. 
+
+arena_optomotor_simulation_time_const.m
+circle_imp_line_par_int_2d.m
+make_4_pix_wide_pattern_triple_res.m
+make_eye_filters.m
+OL_arena_simulation.m
+run_flyorama_EMD_simulation_open_loop.m
+run_flyorama_trajecotries_w_EMD_simulation.m
+sample_wall_positions_flyorama_circ.m
+ShiftMatrix.m
+simple_expansion.m
